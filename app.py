@@ -23,8 +23,9 @@ from flask import (
     session, flash, send_file, g, abort, jsonify
 )
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from collections import defaultdict
 
 # ─────────────────────────────────────────────
 # Konfiguration
@@ -74,19 +75,30 @@ def init_db():
     db.row_factory = sqlite3.Row
     db.executescript("""
         CREATE TABLE IF NOT EXISTS web_users (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            username    TEXT    NOT NULL UNIQUE,
-            password    TEXT    NOT NULL,
-            role        TEXT    NOT NULL DEFAULT 'user',
-            steve_user  TEXT    DEFAULT NULL
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            username            TEXT    NOT NULL UNIQUE,
+            password            TEXT    NOT NULL,
+            role                TEXT    NOT NULL DEFAULT 'user',
+            steve_user          TEXT    DEFAULT NULL,
+            created_at          TEXT    DEFAULT NULL,
+            password_changed_at TEXT    DEFAULT NULL
         );
     """)
+    # Migration: Spalten nachrüsten falls sie noch fehlen
+    cols = {r[1] for r in db.execute("PRAGMA table_info(web_users)")}
+    if "created_at" not in cols:
+        db.execute("ALTER TABLE web_users ADD COLUMN created_at TEXT DEFAULT NULL")
+    if "password_changed_at" not in cols:
+        db.execute("ALTER TABLE web_users ADD COLUMN password_changed_at TEXT DEFAULT NULL")
+    db.commit()
+
     row = db.execute("SELECT COUNT(*) AS cnt FROM web_users").fetchone()
     if row["cnt"] == 0:
         pw_hash = hash_password("admin")
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         db.execute(
-            "INSERT INTO web_users (username, password, role) VALUES (?, ?, ?)",
-            ("admin", pw_hash, "admin")
+            "INSERT INTO web_users (username, password, role, created_at, password_changed_at) VALUES (?, ?, ?, ?, ?)",
+            ("admin", pw_hash, "admin", now, now)
         )
         db.commit()
     db.close()
@@ -413,48 +425,284 @@ def fetch_monthly_stats_by_note(months: list, note_filter: str = "") -> dict:
 
 FONT_NAME = "Segoe UI"
 
-def build_excel(transactions: list, label: str) -> bytes:
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = label[:31]
+# ── Excel-Stil-Konstanten ────────────────────────────────────
+_XL_SUBHEAD_FILL = PatternFill("solid", fgColor="2E75B6")
+_XL_ALT_FILL     = PatternFill("solid", fgColor="DEEAF1")
+_XL_TOTAL_FILL   = PatternFill("solid", fgColor="BDD7EE")
+_XL_WHITE_FILL   = PatternFill("solid", fgColor="FFFFFF")
+_XL_THIN         = Side(style="thin", color="B8CCE4")
+_XL_BORDER       = Border(left=_XL_THIN, right=_XL_THIN, top=_XL_THIN, bottom=_XL_THIN)
+_XL_CENTER       = Alignment(horizontal="center", vertical="center")
+_XL_LEFT         = Alignment(horizontal="left",   vertical="center")
+_XL_RIGHT        = Alignment(horizontal="right",  vertical="center")
 
-    headers = ["Chip","Benutzer","Station","Anschluss","Start","Ende",
-               "Dauer (min)","Zähler Start (Wh)","Zähler Ende (Wh)","Energie (kWh)","Stopgrund"]
-    keys    = ["chip","benutzer","station","anschluss","start_time","stop_time",
-               "dauer_min","zaehler_start","zaehler_ende","energie_kwh","stopgrund"]
+_XL_SUBHEAD_FONT = Font(name=FONT_NAME, bold=True, color="FFFFFF", size=10)
+_XL_BODY_FONT    = Font(name=FONT_NAME, size=10)
+_XL_TOTAL_FONT   = Font(name=FONT_NAME, bold=True, size=10, color="1F4E79")
+_XL_LINK_FONT    = Font(name=FONT_NAME, size=10, color="1F4E79", underline="single")
 
-    fill = PatternFill("solid", fgColor="1F3864")
-    hdr_font = Font(name=FONT_NAME, bold=True, color="FFFFFF", size=10)
+# Spalten-Definition: (key_in_tx, Spaltenüberschrift, Breite, Ausrichtung)
+_XL_COLUMNS = [
+    ("chip",          "RFID-Chip",          16, _XL_LEFT),
+    ("benutzer",      "Benutzer",           18, _XL_LEFT),
+    ("station",       "Ladestation",        22, _XL_LEFT),
+    ("anschluss",     "Anschluss",          11, _XL_CENTER),
+    ("start_time",    "Start",              20, _XL_CENTER),
+    ("stop_time",     "Ende",               20, _XL_CENTER),
+    ("dauer_min",     "Dauer (min)",        12, _XL_RIGHT),
+    ("zaehler_start", "Zähler Start (Wh)", 18, _XL_RIGHT),
+    ("zaehler_ende",  "Zähler Ende (Wh)",  18, _XL_RIGHT),
+    ("energie_kwh",   "Energie (kWh)",      15, _XL_RIGHT),
+    ("stopgrund",     "Stopgrund",          18, _XL_LEFT),
+]
 
-    ws.append(headers)
-    for c, _ in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=c)
-        cell.fill = fill
-        cell.font = hdr_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
 
+def _xl_hdr_cell(ws, row, col, val):
+    c = ws.cell(row=row, column=col, value=val)
+    c.font = _XL_SUBHEAD_FONT; c.fill = _XL_SUBHEAD_FILL
+    c.alignment = _XL_CENTER;  c.border = _XL_BORDER
+    ws.row_dimensions[row].height = 20
+    return c
+
+
+def _xl_data_cell(ws, row, col, val, align, fill):
+    c = ws.cell(row=row, column=col, value=val)
+    c.font = _XL_BODY_FONT; c.fill = fill
+    c.alignment = align; c.border = _XL_BORDER
+    return c
+
+
+def _xl_total_cell(ws, row, col, val, align):
+    c = ws.cell(row=row, column=col, value=val)
+    c.font = _XL_TOTAL_FONT; c.fill = _XL_TOTAL_FILL
+    c.alignment = align; c.border = _XL_BORDER
+    return c
+
+
+def _xl_link_cell(ws, row, col, val, target_sheet, fill):
+    c = ws.cell(row=row, column=col, value=val)
+    c.hyperlink = f"#'{target_sheet}'!A1"
+    c.font = _XL_LINK_FONT; c.fill = fill
+    c.border = _XL_BORDER; c.alignment = _XL_LEFT
+    return c
+
+
+def _xl_sheet_header(ws, title_val, sub_val, n_cols):
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells(f"A1:{get_column_letter(n_cols)}1")
+    t = ws["A1"]
+    t.value = title_val
+    t.font  = Font(name=FONT_NAME, bold=True, size=14, color="1F4E79")
+    t.alignment = _XL_CENTER
+    ws.row_dimensions[1].height = 30
+    ws.merge_cells(f"A2:{get_column_letter(n_cols)}2")
+    s = ws["A2"]
+    s.value = sub_val
+    s.font  = Font(name=FONT_NAME, italic=True, size=10, color="595959")
+    s.alignment = _XL_CENTER
+    ws.row_dimensions[2].height = 18
+    ws.row_dimensions[3].height = 8
+
+
+def build_excel(transactions: list, label: str, date_from: str = "", date_to: str = "") -> bytes:
+    """Baut eine Excel-Datei im Format des Original-Skripts.
+
+    Sheets:
+      1. Auswertung nach Benutzer  – Zusammenfassung pro Name
+      2. Übersicht pro Chip        – alle Chips mit Link zu Detailblatt
+      3..N  Ein Detailblatt pro RFID-Chip
+    """
+    # ── Daten nach Chip gruppieren ───────────────────────────
+    all_data: dict = {}
+    chip_notes: dict = {}
     for tx in transactions:
-        row = []
-        for k in keys:
-            val = tx.get(k, "")
-            if val in ("NULL", None):
-                val = ""
-            row.append(val)
-        ws.append(row)
+        chip = tx.get("chip", "")
+        if not chip:
+            continue
+        all_data.setdefault(chip, []).append(tx)
+        if chip not in chip_notes:
+            chip_notes[chip] = tx.get("benutzer", "") or ""
 
-    energy_col = keys.index("energie_kwh") + 1
-    for row_idx in range(2, ws.max_row + 1):
-        cell = ws.cell(row=row_idx, column=energy_col)
-        try:
-            cell.value = float(cell.value) if cell.value else 0.0
-            cell.number_format = '#,##0.000'
-        except (ValueError, TypeError):
-            pass
-        for col_idx in range(1, len(headers) + 1):
-            ws.cell(row=row_idx, column=col_idx).font = Font(name=FONT_NAME, size=10)
+    # ── Statistiken vorberechnen ─────────────────────────────
+    chip_stats: dict = {}
+    for chip, rows in all_data.items():
+        energy   = sum(float(r.get("energie_kwh") or 0) for r in rows
+                       if r.get("energie_kwh") not in (None, "NULL", ""))
+        duration = sum(float(r.get("dauer_min") or 0)   for r in rows
+                       if r.get("dauer_min") not in (None, "NULL", ""))
+        benutzer = (rows[0].get("benutzer") or "").strip() if rows else ""
+        note     = chip_notes.get(chip, "")
+        chip_stats[chip] = {
+            "energy":   round(energy, 3),
+            "duration": round(duration, 1),
+            "count":    len(rows),
+            "benutzer": benutzer,
+            "note":     note,
+        }
 
-    for i, h in enumerate(headers, 1):
-        ws.column_dimensions[get_column_letter(i)].width = max(12, len(h) + 4)
+    user_stats: dict = defaultdict(lambda: {"energy": 0.0, "duration": 0.0, "count": 0, "chips": []})
+    for chip, st in chip_stats.items():
+        name = st["benutzer"] or st["note"] or f"(kein Name – {chip})"
+        user_stats[name]["energy"]   += st["energy"]
+        user_stats[name]["duration"] += st["duration"]
+        user_stats[name]["count"]    += st["count"]
+        user_stats[name]["chips"].append(chip)
+
+    date_from_str = date_from[:10] if date_from else ""
+    date_to_str   = date_to[:10]   if date_to   else ""
+    zeitraum_sub  = (f"Zeitraum: {date_from_str} bis {date_to_str}"
+                     if date_from_str else label)
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    # ── Sheet 1: Auswertung nach Benutzer ────────────────────
+    ws_user = wb.create_sheet("Auswertung nach Benutzer")
+    _xl_sheet_header(ws_user,
+        f"SteVe Ladehistorie – Auswertung nach Benutzer – {label}",
+        zeitraum_sub, 4)
+
+    for ci, h in enumerate(["Benutzer", "Ladevorgänge", "Ges. Energie (kWh)", "RFID-Chips"], 1):
+        _xl_hdr_cell(ws_user, 4, ci, h)
+
+    urow = 5
+    for name, st in sorted(user_stats.items()):
+        fill = _XL_ALT_FILL if urow % 2 == 0 else _XL_WHITE_FILL
+        _xl_data_cell(ws_user, urow, 1, name,          _XL_LEFT,  fill)
+        _xl_data_cell(ws_user, urow, 2, st["count"],   _XL_RIGHT, fill)
+        c = _xl_data_cell(ws_user, urow, 3, st["energy"], _XL_RIGHT, fill)
+        c.number_format = "0.000"
+        _xl_data_cell(ws_user, urow, 4, ", ".join(st["chips"]), _XL_LEFT, fill)
+        ws_user.row_dimensions[urow].height = 18
+        urow += 1
+
+    if urow > 5:
+        _xl_total_cell(ws_user, urow, 1, "GESAMT", _XL_LEFT)
+        _xl_total_cell(ws_user, urow, 2, f"=SUM(B5:B{urow-1})", _XL_RIGHT)
+        c = _xl_total_cell(ws_user, urow, 3, f"=SUM(C5:C{urow-1})", _XL_RIGHT)
+        c.number_format = "0.000"
+        _xl_total_cell(ws_user, urow, 4, "", _XL_LEFT)
+
+    ws_user.column_dimensions["A"].width = 28
+    ws_user.column_dimensions["B"].width = 14
+    ws_user.column_dimensions["C"].width = 20
+    ws_user.column_dimensions["D"].width = 50
+
+    # ── Sheet 2: Übersicht pro Chip ──────────────────────────
+    ws_summary = wb.create_sheet("Übersicht pro Chip")
+    _xl_sheet_header(ws_summary,
+        f"SteVe Ladehistorie – Übersicht pro Chip – {label}",
+        zeitraum_sub, 6)
+
+    for ci, h in enumerate(["RFID-Chip", "Note / Kommentar", "Benutzer",
+                              "Ladevorgänge", "Ges. Energie (kWh)", "Blatt"], 1):
+        _xl_hdr_cell(ws_summary, 4, ci, h)
+
+    summary_row = 5
+    for chip, st in chip_stats.items():
+        fill = _XL_ALT_FILL if summary_row % 2 == 0 else _XL_WHITE_FILL
+        sheet_name = chip[:31]
+        _xl_link_cell(ws_summary, summary_row, 1, chip, sheet_name, fill)
+        _xl_data_cell(ws_summary, summary_row, 2, st["note"],     _XL_LEFT,  fill)
+        _xl_data_cell(ws_summary, summary_row, 3, st["benutzer"], _XL_LEFT,  fill)
+        _xl_data_cell(ws_summary, summary_row, 4, st["count"],    _XL_RIGHT, fill)
+        c = _xl_data_cell(ws_summary, summary_row, 5, st["energy"], _XL_RIGHT, fill)
+        c.number_format = "0.000"
+        _xl_link_cell(ws_summary, summary_row, 6, sheet_name, sheet_name, fill)
+        ws_summary.row_dimensions[summary_row].height = 18
+        summary_row += 1
+
+    if summary_row > 5:
+        _xl_total_cell(ws_summary, summary_row, 1, "GESAMT", _XL_LEFT)
+        for col in (2, 3, 6):
+            _xl_total_cell(ws_summary, summary_row, col, "", _XL_LEFT)
+        _xl_total_cell(ws_summary, summary_row, 4, f"=SUM(D5:D{summary_row-1})", _XL_RIGHT)
+        c = _xl_total_cell(ws_summary, summary_row, 5, f"=SUM(E5:E{summary_row-1})", _XL_RIGHT)
+        c.number_format = "0.000"
+
+    ws_summary.column_dimensions["A"].width = 20
+    ws_summary.column_dimensions["B"].width = 28
+    ws_summary.column_dimensions["C"].width = 22
+    ws_summary.column_dimensions["D"].width = 14
+    ws_summary.column_dimensions["E"].width = 20
+    ws_summary.column_dimensions["F"].width = 22
+
+    # ── Ein Detailblatt pro Chip ─────────────────────────────
+    for chip, rows in all_data.items():
+        safe_name = chip[:31]
+        note      = chip_notes.get(chip, "")
+        ws = wb.create_sheet(safe_name)
+        ws.sheet_view.showGridLines = False
+        ws.freeze_panes = "A4"
+
+        n_cols = len(_XL_COLUMNS)
+        ws.merge_cells(f"A1:{get_column_letter(n_cols)}1")
+        t = ws["A1"]
+        t.value     = (f"Ladehistorie: {chip}"
+                       + (f"  |  {note}" if note else "")
+                       + f"  |  {label}")
+        t.font      = Font(name=FONT_NAME, bold=True, size=12, color="1F4E79")
+        t.alignment = _XL_CENTER
+        ws.row_dimensions[1].height = 26
+
+        ws.merge_cells(f"A2:{get_column_letter(n_cols)}2")
+        ws["A2"].value     = zeitraum_sub
+        ws["A2"].font      = Font(name=FONT_NAME, italic=True, size=9, color="595959")
+        ws["A2"].alignment = _XL_CENTER
+        ws.row_dimensions[2].height = 16
+        ws.row_dimensions[3].height = 6
+
+        for col_idx, (_, col_label, width, _align) in enumerate(_XL_COLUMNS, 1):
+            _xl_hdr_cell(ws, 3, col_idx, col_label)
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+        ws.row_dimensions[3].height = 20
+
+        if not rows:
+            ws.merge_cells(f"A4:{get_column_letter(n_cols)}4")
+            c = ws["A4"]
+            c.value     = "Keine Ladevorgänge im gewählten Zeitraum."
+            c.font      = Font(name=FONT_NAME, italic=True, size=10, color="595959")
+            c.alignment = _XL_CENTER
+            continue
+
+        for row_idx, tx in enumerate(rows, 4):
+            fill = _XL_ALT_FILL if row_idx % 2 == 0 else _XL_WHITE_FILL
+            ws.row_dimensions[row_idx].height = 18
+            for col_idx, (key, _, _, align) in enumerate(_XL_COLUMNS, 1):
+                raw = tx.get(key, "")
+                val = None if raw in ("NULL", None, "") else raw
+                if key in ("anschluss", "zaehler_start", "zaehler_ende"):
+                    try: val = int(val)
+                    except: pass
+                elif key in ("dauer_min", "energie_kwh"):
+                    try: val = float(val)
+                    except: pass
+                c = ws.cell(row=row_idx, column=col_idx, value=val)
+                c.font = _XL_BODY_FONT; c.fill = fill
+                c.alignment = align; c.border = _XL_BORDER
+                if key == "energie_kwh" and val is not None:
+                    c.number_format = "0.000"
+                elif key == "dauer_min" and val is not None:
+                    c.number_format = "0.0"
+
+        total_row = len(rows) + 4
+        ws.row_dimensions[total_row].height = 20
+        ws.merge_cells(f"A{total_row}:{get_column_letter(7)}{total_row}")
+        c = ws.cell(row=total_row, column=1, value="SUMME")
+        c.font = _XL_TOTAL_FONT; c.fill = _XL_TOTAL_FILL
+        c.border = _XL_BORDER; c.alignment = _XL_RIGHT
+
+        for col_idx, (key, _, _, _align) in enumerate(_XL_COLUMNS, 1):
+            if key in ("dauer_min", "energie_kwh"):
+                col_letter = get_column_letter(col_idx)
+                c = ws.cell(row=total_row, column=col_idx,
+                            value=f"=SUM({col_letter}4:{col_letter}{total_row-1})")
+                c.font = _XL_TOTAL_FONT; c.fill = _XL_TOTAL_FILL
+                c.border = _XL_BORDER; c.alignment = _XL_RIGHT
+                c.number_format = "0.000" if key == "energie_kwh" else "0.0"
+            elif col_idx > 7:
+                c = ws.cell(row=total_row, column=col_idx, value="")
+                c.fill = _XL_TOTAL_FILL; c.border = _XL_BORDER
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -478,6 +726,9 @@ def role_required(*roles):
     def decorator(f):
         @wraps(f)
         def decorated(*args, **kwargs):
+            # Passwortänderung erzwingen bevor andere Seiten zugänglich sind
+            if session.get("must_change_password") and request.endpoint != "change_password":
+                return redirect(url_for("change_password"))
             if "user_id" not in session:
                 return redirect(url_for("login"))
             if session.get("role") not in roles:
@@ -563,6 +814,12 @@ def login():
             session["username"] = user["username"]
             session["role"] = user["role"]
             session.permanent = True
+            # Erstes Login: created_at == password_changed_at → Passwort ändern erzwingen
+            ca  = user["created_at"]
+            pca = user["password_changed_at"]
+            if ca and pca and ca == pca and user["role"] != "admin":
+                session["must_change_password"] = True
+                return redirect(url_for("change_password"))
             if user["role"] == "admin":
                 return redirect(url_for("admin_users"))
             return redirect(url_for("dashboard"))
@@ -574,6 +831,40 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.route("/change-password", methods=["GET", "POST"])
+@login_required
+def change_password():
+    """Eigenes Passwort ändern (für alle Rollen außer admin, erzwungen beim Erst-Login)."""
+    must_change = session.get("must_change_password", False)
+    error = None
+    if request.method == "POST":
+        current_pw  = request.form.get("current_password", "")
+        new_pw      = request.form.get("new_password", "").strip()
+        confirm_pw  = request.form.get("confirm_password", "").strip()
+        db = get_db()
+        user = db.execute("SELECT * FROM web_users WHERE id=?", (session["user_id"],)).fetchone()
+        if not user or user["password"] != hash_password(current_pw):
+            error = "Das aktuelle Passwort ist falsch."
+        elif len(new_pw) < 6:
+            error = "Das neue Passwort muss mindestens 6 Zeichen lang sein."
+        elif new_pw != confirm_pw:
+            error = "Die neuen Passwörter stimmen nicht überein."
+        else:
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            db.execute(
+                "UPDATE web_users SET password=?, password_changed_at=? WHERE id=?",
+                (hash_password(new_pw), now, session["user_id"])
+            )
+            db.commit()
+            session.pop("must_change_password", None)
+            flash("Passwort erfolgreich geändert.", "success")
+            role = session.get("role")
+            if role == "admin":
+                return redirect(url_for("admin_users"))
+            return redirect(url_for("dashboard"))
+    return render_template("change_password.html", must_change=must_change, error=error)
 
 # ─────────────────────────────────────────────
 # Routen – Dashboard & Ladehistorie
@@ -773,7 +1064,7 @@ def export():
         filtered = filter_chips_by_note(fetch_all_chips(), note_filter)
         chips = [c["id_tag"] for c in filtered]
     transactions = fetch_transactions(chips, date_from, date_to)
-    xlsx_bytes = build_excel(transactions, label)
+    xlsx_bytes = build_excel(transactions, label, date_from, date_to)
 
     return send_file(
         io.BytesIO(xlsx_bytes),
@@ -814,9 +1105,10 @@ def admin_user_new():
         else:
             db = get_db()
             try:
+                now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
                 db.execute(
-                    "INSERT INTO web_users (username, password, role, steve_user) VALUES (?,?,?,?)",
-                    (uname, hash_password(pw), role, steve)
+                    "INSERT INTO web_users (username, password, role, steve_user, created_at, password_changed_at) VALUES (?,?,?,?,?,?)",
+                    (uname, hash_password(pw), role, steve, now, now)
                 )
                 db.commit()
                 flash(f"Benutzer '{uname}' angelegt.", "success")

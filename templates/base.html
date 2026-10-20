@@ -47,6 +47,14 @@
             <span class="badge role-badge-{{ session.role }}">{{ session.role }}</span>
           </a>
           <ul class="dropdown-menu dropdown-menu-end shadow border-0">
+            {% if session.role != 'admin' %}
+            <li>
+              <a class="dropdown-item" href="{{ url_for('change_password') }}">
+                <i class="bi bi-key me-2"></i>Passwort ändern
+              </a>
+            </li>
+            <li><hr class="dropdown-divider"></li>
+            {% endif %}
             <li>
               <a class="dropdown-item text-danger" href="{{ url_for('logout') }}">
                 <i class="bi bi-box-arrow-right me-2"></i>Abmelden
