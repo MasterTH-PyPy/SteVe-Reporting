@@ -261,9 +261,10 @@ def fetch_monthly_stats_for_chips(chips: list, months: list) -> list:
     if not chips:
         return [{"month": m["value"], "label": m["label"], "kwh": 0.0, "count": 0} for m in months]
     chip_list = ", ".join(f"'{c}'" for c in chips)
-    # Ältester und neuester Monat für einen einzigen Query
-    oldest = months[-1]["value"] + "-01 00:00:00"
-    newest_m = months[0]["value"]
+    # Ältester und neuester Monat – unabhängig von der Reihenfolge der Liste
+    values   = sorted(m["value"] for m in months)
+    oldest   = values[0] + "-01 00:00:00"
+    newest_m = values[-1]
     y, mo = int(newest_m[:4]), int(newest_m[5:7])
     newest_last = (date(y, mo, 1) + relativedelta(months=1) - relativedelta(days=1)).strftime("%Y-%m-%d 23:59:59")
 
@@ -509,23 +510,18 @@ def dashboard():
 
     # Statistik für die Stat-Cards (letzte 12 abgeschlossene Monate)
     if role == "buchhaltung":
-        stats_months = get_past_months(12)
-        # Für initiale Anzeige: vergangener Monat
-        init_month   = stats_months[0] if stats_months else None
-        all_chips    = [c["id_tag"] for c in all_chips_info]
-        if init_month:
-            init_stats = fetch_monthly_stats_for_chips(all_chips, [init_month])
-            init_kwh   = init_stats[0]["kwh"] if init_stats else 0.0
-            init_count = init_stats[0]["count"] if init_stats else 0
-        else:
-            init_kwh, init_count = 0.0, 0
+        all_chips = [c["id_tag"] for c in all_chips_info]
+        stats_months = get_months(12, include_current=True)
+        init_stats   = fetch_monthly_stats_for_chips(all_chips, stats_months)
+        init_kwh     = round(sum(s["kwh"] for s in init_stats), 3)
+        init_count   = sum(s["count"] for s in init_stats)
     else:
         db         = get_db()
         user_row   = db.execute("SELECT steve_user FROM web_users WHERE id=?",
                                 (session["user_id"],)).fetchone()
         steve_user = user_row["steve_user"] if user_row else None
         chips      = fetch_chips_for_note(steve_user) if steve_user else []
-        stats_months = get_past_months(12)
+        stats_months = get_months(12, include_current=True)  # inkl. laufender Monat
         monthly    = fetch_monthly_stats_for_chips(chips, stats_months)
         total_kwh  = sum(s["kwh"] for s in monthly)
         total_cnt  = sum(s["count"] for s in monthly)
