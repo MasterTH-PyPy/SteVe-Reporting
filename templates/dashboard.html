@@ -4,108 +4,278 @@
 {% block content %}
 <div class="page-header mb-4">
   <h3 class="fw-bold mb-1">
-    <i class="bi bi-speedometer2 me-2 text-primary"></i>Ladehistorie
+    <i class="bi bi-speedometer2 me-2 text-primary"></i>Dashboard
   </h3>
-  <p class="text-muted mb-0">Wählen Sie einen Zeitraum aus.</p>
+  <p class="text-muted mb-0">Ladestatistik &amp; Zeitraumauswahl</p>
 </div>
 
-<div class="row justify-content-center">
-  <div class="col-lg-6 col-md-9">
-    <div class="card shadow-sm border-0">
-      <div class="card-body p-4">
-        <form method="get" action="{{ url_for('history') }}">
-
-          <div class="mb-3">
-            <label class="form-label fw-semibold">
-              <i class="bi bi-calendar3 me-1 text-primary"></i>Monat
-            </label>
-            <select name="month" class="form-select" id="monthSelect" required
-                    onchange="onMonthChange(this.value)">
-              <option value="">— Bitte wählen —</option>
-              {% for m in months %}
-              <option value="{{ m.value }}">{{ m.label }}</option>
-              {% endfor %}
-            </select>
+{# ── Stat Cards ───────────────────────────────────────────── #}
+<div class="row g-3 mb-4" id="statCards">
+  <div class="col-md-6">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body d-flex align-items-center gap-3">
+        <div class="stat-icon bg-primary-subtle rounded-3 p-3">
+          <i class="bi bi-lightning-charge-fill fs-3 text-primary"></i>
+        </div>
+        <div>
+          <div class="text-muted small">
+            {% if role == 'buchhaltung' %}Letzter Monat{% else %}Letzte 12 Monate{% endif %}
           </div>
-
-          {% if role in ('userplus', 'buchhaltung') %}
-          <div class="mb-3" id="daySection" style="display:none">
-            <label class="form-label fw-semibold">
-              <i class="bi bi-calendar-day me-1 text-primary"></i>Einzeltag
-              <span class="text-muted fw-normal small">(optional)</span>
-            </label>
-            <select name="day" class="form-select" id="daySelect">
-              <option value="">Ganzen Monat anzeigen</option>
-            </select>
-          </div>
-          {% endif %}
-
-          {% if role == 'buchhaltung' %}
-          <div class="mb-3">
-            <label class="form-label fw-semibold">
-              <i class="bi bi-credit-card me-1 text-primary"></i>Chips filtern
-              <span class="text-muted fw-normal small">(leer = alle)</span>
-            </label>
-            <select name="chips" class="form-select" multiple size="6" id="chipSelect">
-              {% for chip in all_chips_info %}
-              <option value="{{ chip.id_tag }}">
-                {{ chip.note if chip.note else chip.id_tag }}
-                {% if chip.note %} ({{ chip.id_tag }}){% endif %}
-              </option>
-              {% endfor %}
-            </select>
-            <div class="form-text">Strg+Klick für Mehrfachauswahl</div>
-          </div>
-          {% endif %}
-
-          <div class="d-grid gap-2">
-            <button type="submit" class="btn btn-primary">
-              <i class="bi bi-search me-2"></i>Ladevorgänge anzeigen
-            </button>
-            {% if role == 'buchhaltung' %}
-            <button type="submit" form="exportForm" class="btn btn-outline-success">
-              <i class="bi bi-file-earmark-excel me-2"></i>Als Excel exportieren
-            </button>
-            {% endif %}
-          </div>
-        </form>
-
-        {% if role == 'buchhaltung' %}
-        {# Separates Formular für Export – übernimmt dieselben Werte per JS #}
-        <form id="exportForm" method="get" action="{{ url_for('export') }}" style="display:none">
-          <input type="hidden" name="month" id="exportMonth"/>
-          <div id="exportChips"></div>
-        </form>
-        {% endif %}
+          <div class="fw-bold fs-4" id="statKwh">{{ "%.3f"|format(init_kwh) }} kWh</div>
+        </div>
       </div>
     </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body d-flex align-items-center gap-3">
+        <div class="stat-icon bg-success-subtle rounded-3 p-3">
+          <i class="bi bi-plug-fill fs-3 text-success"></i>
+        </div>
+        <div>
+          <div class="text-muted small">
+            {% if role == 'buchhaltung' %}Ladevorgänge letzter Monat{% else %}Ladevorgänge letzte 12 Monate{% endif %}
+          </div>
+          <div class="fw-bold fs-4" id="statCount">{{ init_count }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Chart ────────────────────────────────────────────────── #}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-header bg-transparent border-bottom-0 pt-3 pb-0 d-flex align-items-center justify-content-between">
+    <span class="fw-semibold" id="chartTitle">
+      {% if role == 'buchhaltung' %}Verbrauch nach Mitarbeiter – letzte 12 Monate{% else %}Verbrauch letzte 12 Monate{% endif %}
+    </span>
+    <span class="spinner-border spinner-border-sm text-primary d-none" id="chartSpinner"></span>
+  </div>
+  <div class="card-body" style="position:relative;min-height:260px">
+    <canvas id="statsChart"></canvas>
+  </div>
+</div>
+
+{# ── Auswahl-Formular ─────────────────────────────────────── #}
+<div class="card shadow-sm border-0">
+  <div class="card-header bg-transparent border-bottom-0 pt-3 pb-0">
+    <span class="fw-semibold"><i class="bi bi-search me-2 text-primary"></i>Zeitraum anzeigen</span>
+  </div>
+  <div class="card-body p-4">
+    <form method="get" action="{{ url_for('history') }}" id="historyForm">
+
+      <div class="mb-3">
+        <label class="form-label fw-semibold">
+          <i class="bi bi-calendar3 me-1 text-primary"></i>Monat
+        </label>
+        <select name="month" class="form-select" id="monthSelect" required
+                onchange="onMonthChange(this.value)">
+          <option value="">— Bitte wählen —</option>
+          {% for m in months %}
+          <option value="{{ m.value }}">{{ m.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      {% if role in ('userplus', 'buchhaltung') %}
+      <div class="mb-3" id="daySection" style="display:none">
+        <label class="form-label fw-semibold">
+          <i class="bi bi-calendar-day me-1 text-primary"></i>Einzeltag
+          <span class="text-muted fw-normal small">(optional)</span>
+        </label>
+        <select name="day" class="form-select" id="daySelect">
+          <option value="">Ganzen Monat anzeigen</option>
+        </select>
+      </div>
+      {% endif %}
+
+      {% if role == 'buchhaltung' %}
+      <div class="mb-3">
+        <label class="form-label fw-semibold">
+          <i class="bi bi-credit-card me-1 text-primary"></i>Chips filtern
+          <span class="text-muted fw-normal small">(leer = alle)</span>
+        </label>
+        <select name="chips" class="form-select" multiple size="6" id="chipSelect">
+          {% for chip in all_chips_info %}
+          <option value="{{ chip.id_tag }}">
+            {{ chip.note if chip.note else chip.id_tag }}
+            {% if chip.note %} ({{ chip.id_tag }}){% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        <div class="form-text">Strg+Klick für Mehrfachauswahl</div>
+      </div>
+      {% endif %}
+
+      <div class="d-grid gap-2">
+        <button type="submit" class="btn btn-primary">
+          <i class="bi bi-search me-2"></i>Ladevorgänge anzeigen
+        </button>
+        {% if role == 'buchhaltung' %}
+        <button type="button" class="btn btn-outline-success" id="exportBtn">
+          <i class="bi bi-file-earmark-excel me-2"></i>Als Excel exportieren
+        </button>
+        {% endif %}
+      </div>
+    </form>
+
+    {% if role == 'buchhaltung' %}
+    <form id="exportForm" method="get" action="{{ url_for('export') }}" style="display:none">
+      <input type="hidden" name="month" id="exportMonth"/>
+      <div id="exportChips"></div>
+    </form>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
+{# Chart.js via CDN #}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"
+        integrity="sha512-ZwR1/gSZM3ai6vCdI+LVF1zSq/5HznD3oD+sCoJrzXJ+yKen9RWAw5Dgp0x4cjx/7AnxgDyxy68V3APGknQkg=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
 <script>
+// ─── Farb-Palette ───────────────────────────────────────────
+const PALETTE = [
+  '#1a56db','#16bdca','#e74694','#f59e0b','#10b981',
+  '#8b5cf6','#f97316','#06b6d4','#84cc16','#ec4899',
+  '#6366f1','#14b8a6'
+];
+
+let chart = null;
+
+// ─── Chart initialisieren ───────────────────────────────────
+function initChart(type, labels, datasets, singleBar) {
+  const ctx = document.getElementById('statsChart').getContext('2d');
+  if (chart) chart.destroy();
+
+  if (type === 'stacked' || (type === 'bar' && !singleBar)) {
+    // Gestapelter Balken (Buchhaltung) oder einfacher Balken (user)
+    const isStacked = type === 'stacked';
+    chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: isStacked
+          ? datasets.map((ds, i) => ({
+              label: ds.note,
+              data: ds.data,
+              backgroundColor: PALETTE[i % PALETTE.length] + 'CC',
+              borderColor:     PALETTE[i % PALETTE.length],
+              borderWidth: 1,
+            }))
+          : [{
+              label: 'kWh',
+              data: datasets,
+              backgroundColor: '#1a56dbCC',
+              borderColor:     '#1a56db',
+              borderWidth: 1,
+              borderRadius: 4,
+            }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: { display: isStacked, position: 'bottom' },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)} kWh`,
+              footer: isStacked ? (items) => {
+                const sum = items.reduce((a, b) => a + b.parsed.y, 0);
+                return `Gesamt: ${sum.toFixed(3)} kWh`;
+              } : undefined,
+            }
+          }
+        },
+        scales: {
+          x: { stacked: isStacked, grid: { display: false } },
+          y: {
+            stacked: isStacked,
+            title: { display: true, text: 'kWh' },
+            ticks: { callback: v => v.toFixed(1) },
+          }
+        }
+      }
+    });
+  }
+}
+
+// ─── Stats laden ────────────────────────────────────────────
+function loadStats(ym) {
+  const spinner = document.getElementById('chartSpinner');
+  spinner.classList.remove('d-none');
+  const url = '/api/stats' + (ym ? '?month=' + ym : '');
+  fetch(url)
+    .then(r => r.json())
+    .then(d => {
+      spinner.classList.add('d-none');
+      // Stat-Cards
+      document.getElementById('statKwh').textContent   = d.total_kwh.toFixed(3) + ' kWh';
+      document.getElementById('statCount').textContent  = d.total_count;
+      // Chart-Titel
+      const titleEl = document.getElementById('chartTitle');
+      {% if role == 'buchhaltung' %}
+      if (ym) {
+        const [y,m] = ym.split('-');
+        titleEl.textContent = 'Verbrauch nach Mitarbeiter – ' + new Date(y,m-1).toLocaleDateString('de-DE',{month:'long',year:'numeric'});
+      } else {
+        titleEl.textContent = 'Verbrauch nach Mitarbeiter – letzte 12 Monate';
+      }
+      initChart('stacked', d.labels, d.datasets, false);
+      {% else %}
+      if (ym) {
+        const [y,m] = ym.split('-');
+        titleEl.textContent = 'Verbrauch – ' + new Date(y,m-1).toLocaleDateString('de-DE',{month:'long',year:'numeric'});
+      } else {
+        titleEl.textContent = 'Verbrauch letzte 12 Monate';
+      }
+      initChart('bar', d.labels, d.data, !!ym);
+      {% endif %}
+    })
+    .catch(() => spinner.classList.add('d-none'));
+}
+
+// ─── Monat-Auswahl ──────────────────────────────────────────
 function onMonthChange(ym) {
   {% if role in ('userplus', 'buchhaltung') %}
   const sec = document.getElementById('daySection');
   const sel = document.getElementById('daySelect');
-  if (!ym) { sec.style.display = 'none'; return; }
-  sec.style.display = '';
-  const [y, mo] = ym.split('-').map(Number);
-  const days = new Date(y, mo, 0).getDate();
-  sel.innerHTML = '<option value="">Ganzen Monat anzeigen</option>';
-  for (let d = 1; d <= days; d++) {
-    const dd = String(d).padStart(2, '0');
-    sel.innerHTML += `<option value="${ym}-${dd}">${dd}.${String(mo).padStart(2,'0')}.${y}</option>`;
+  if (!ym) { sec.style.display = 'none'; }
+  else {
+    sec.style.display = '';
+    const [y, mo] = ym.split('-').map(Number);
+    const days = new Date(y, mo, 0).getDate();
+    sel.innerHTML = '<option value="">Ganzen Monat anzeigen</option>';
+    for (let d = 1; d <= days; d++) {
+      const dd = String(d).padStart(2,'0');
+      const mm = String(mo).padStart(2,'0');
+      sel.innerHTML += `<option value="${ym}-${dd}">${dd}.${mm}.${y}</option>`;
+    }
   }
   {% endif %}
   {% if role == 'buchhaltung' %}
+  // Export-Button: nur für abgeschlossene Monate
+  const todayYm = new Date().toISOString().slice(0,7);
+  const exportBtn = document.getElementById('exportBtn');
+  if (exportBtn) {
+    exportBtn.disabled = (!ym || ym === todayYm);
+    exportBtn.title = (!ym || ym === todayYm) ? 'Kein Export für den laufenden Monat' : '';
+  }
   document.getElementById('exportMonth').value = ym;
   {% endif %}
+  // Chart & Stat-Cards für ausgewählten Monat neu laden
+  if (ym) loadStats(ym);
+  else     loadStats('');
 }
 
 {% if role == 'buchhaltung' %}
-document.getElementById('exportForm').addEventListener('submit', function() {
+document.getElementById('exportBtn').addEventListener('click', function() {
+  const ym = document.getElementById('monthSelect').value;
+  const todayYm = new Date().toISOString().slice(0,7);
+  if (!ym || ym === todayYm) return;
+  document.getElementById('exportMonth').value = ym;
   const chips = document.getElementById('chipSelect');
   const container = document.getElementById('exportChips');
   container.innerHTML = '';
@@ -116,7 +286,13 @@ document.getElementById('exportForm').addEventListener('submit', function() {
       container.appendChild(inp);
     });
   }
+  document.getElementById('exportForm').submit();
 });
+// Export-Button initial deaktivieren (kein Monat ausgewählt)
+document.getElementById('exportBtn').disabled = true;
 {% endif %}
+
+// Initiales Laden (Übersicht ohne Monatsfilter)
+loadStats('');
 </script>
 {% endblock %}

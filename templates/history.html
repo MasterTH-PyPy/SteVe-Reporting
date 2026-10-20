@@ -13,12 +13,16 @@
     </p>
   </div>
   <div class="d-flex gap-2 flex-wrap">
-    {% if role == 'buchhaltung' %}
-    {# Export-Link mit denselben Parametern #}
+    {% if allow_export %}
+    {# Export-Link mit denselben Parametern – nur für abgeschlossene Monate #}
     <a href="{{ url_for('export', month=ym, **{'chips': selected_chips}) }}"
        class="btn btn-outline-success btn-sm">
       <i class="bi bi-file-earmark-excel me-1"></i>Excel exportieren
     </a>
+    {% elif role == 'buchhaltung' %}
+    <span class="btn btn-outline-secondary btn-sm disabled" title="Kein Export für den laufenden Monat">
+      <i class="bi bi-file-earmark-excel me-1"></i>Excel exportieren
+    </span>
     {% endif %}
     <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">
       <i class="bi bi-arrow-left me-1"></i>Zurück

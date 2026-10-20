@@ -20,7 +20,7 @@ from functools import wraps
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, flash, send_file, g, abort
+    session, flash, send_file, g, abort, jsonify
 )
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -241,6 +241,85 @@ def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
     return result
 
 # ─────────────────────────────────────────────
+# Statistik-Abfragen
+# ─────────────────────────────────────────────
+
+def fetch_monthly_stats_for_chips(chips: list, months: list) -> list:
+    """
+    Gibt für jeden Monat (YYYY-MM) die Summe kWh + Anzahl Ladevorgänge zurück.
+    months: Liste von {'value': 'YYYY-MM', 'label': '...'}
+    Rückgabe: [{'month': 'YYYY-MM', 'label': '...', 'kwh': float, 'count': int}]
+    """
+    if not chips:
+        return [{"month": m["value"], "label": m["label"], "kwh": 0.0, "count": 0} for m in months]
+    chip_list = ", ".join(f"'{c}'" for c in chips)
+    # Ältester und neuester Monat für einen einzigen Query
+    oldest = months[-1]["value"] + "-01 00:00:00"
+    newest_m = months[0]["value"]
+    y, mo = int(newest_m[:4]), int(newest_m[5:7])
+    newest_last = (date(y, mo, 1) + relativedelta(months=1) - relativedelta(days=1)).strftime("%Y-%m-%d 23:59:59")
+
+    if STEVE_VERSION == "current":
+        sql = f"""
+            SELECT DATE_FORMAT(ts.start_timestamp,'%Y-%m') AS ym,
+                   COUNT(*) AS cnt,
+                   ROUND(SUM((te.stop_value - ts.start_value)/1000.0),3) AS kwh
+            FROM transaction_start ts
+            LEFT JOIN transaction_stop te ON ts.transaction_pk = te.transaction_pk
+            WHERE ts.id_tag IN ({chip_list})
+              AND ts.start_timestamp BETWEEN '{oldest}' AND '{newest_last}'
+              AND te.stop_value IS NOT NULL
+            GROUP BY ym ORDER BY ym;
+        """
+    else:
+        sql = f"""
+            SELECT DATE_FORMAT(t.start_timestamp,'%Y-%m') AS ym,
+                   COUNT(*) AS cnt,
+                   ROUND(SUM((t.stop_value - t.start_value)/1000.0),3) AS kwh
+            FROM `transaction` t
+            WHERE t.id_tag IN ({chip_list})
+              AND t.start_timestamp BETWEEN '{oldest}' AND '{newest_last}'
+              AND t.stop_value IS NOT NULL
+            GROUP BY ym ORDER BY ym;
+        """
+    rows = run_mysql(sql)
+    db_data = {}
+    for r in rows:
+        if len(r) >= 3:
+            db_data[r[0]] = {"count": int(r[1] or 0), "kwh": float(r[2] or 0)}
+    result = []
+    for m in months:
+        d = db_data.get(m["value"], {"count": 0, "kwh": 0.0})
+        result.append({"month": m["value"], "label": m["label"], "kwh": d["kwh"], "count": d["count"]})
+    return result
+
+
+def fetch_monthly_stats_by_note(months: list) -> dict:
+    """
+    Buchhaltung: kWh pro Monat aufgeteilt nach Chip-Note.
+    Rückgabe: {'labels': [...Monate...], 'notes': ['Note A', 'Note B', ...],
+               'datasets': [{'note': '...', 'data': [kwh, kwh, ...]}, ...]}
+    """
+    # Alle Chips mit Note laden
+    all_chips_info = fetch_all_chips()
+    # Note → [chip_ids]
+    note_to_chips = {}
+    for c in all_chips_info:
+        note = c["note"] or c["id_tag"]
+        note_to_chips.setdefault(note, []).append(c["id_tag"])
+
+    labels = [m["label"] for m in months]
+    datasets = []
+    for note, chips in sorted(note_to_chips.items()):
+        stats = fetch_monthly_stats_for_chips(chips, months)
+        datasets.append({
+            "note": note,
+            "data": [s["kwh"] for s in stats],
+        })
+    return {"labels": labels, "datasets": datasets}
+
+
+# ─────────────────────────────────────────────
 # Excel-Export (nur Buchhaltung)
 # ─────────────────────────────────────────────
 
@@ -323,16 +402,26 @@ def role_required(*roles):
 # Zeitraum-Hilfsfunktionen
 # ─────────────────────────────────────────────
 
-def get_past_months(n=12) -> list:
+def get_months(n=12, include_current=True) -> list:
+    """Gibt n Monate zurück, optional mit dem laufenden Monat voran."""
     months = []
     today = date.today().replace(day=1)
-    for i in range(1, n + 1):
+    start = 0 if include_current else 1
+    for i in range(start, n + start):
         d = today - relativedelta(months=i)
+        label = d.strftime("%B %Y")
+        if i == 0:
+            label += " (aktuell)"
         months.append({
             "value": d.strftime("%Y-%m"),
-            "label": d.strftime("%B %Y"),
+            "label": label,
+            "is_current": i == 0,
         })
     return months
+
+
+def get_past_months(n=12) -> list:
+    return get_months(n, include_current=False)
 
 
 def month_range(ym: str) -> tuple:
@@ -406,13 +495,92 @@ def logout():
 @app.route("/dashboard")
 @role_required("user", "userplus", "buchhaltung")
 def dashboard():
-    months = get_past_months(12)
-    all_chips_info = fetch_all_chips() if session["role"] == "buchhaltung" else []
+    role   = session["role"]
+    # Aktueller Monat + 12 vergangene = 13 Einträge
+    months = get_months(12, include_current=True)
+    all_chips_info = fetch_all_chips() if role == "buchhaltung" else []
+
+    # Statistik für die Stat-Cards (letzte 12 abgeschlossene Monate)
+    if role == "buchhaltung":
+        stats_months = get_past_months(12)
+        # Für initiale Anzeige: vergangener Monat
+        init_month   = stats_months[0] if stats_months else None
+        all_chips    = [c["id_tag"] for c in all_chips_info]
+        if init_month:
+            init_stats = fetch_monthly_stats_for_chips(all_chips, [init_month])
+            init_kwh   = init_stats[0]["kwh"] if init_stats else 0.0
+            init_count = init_stats[0]["count"] if init_stats else 0
+        else:
+            init_kwh, init_count = 0.0, 0
+    else:
+        db         = get_db()
+        user_row   = db.execute("SELECT steve_user FROM web_users WHERE id=?",
+                                (session["user_id"],)).fetchone()
+        steve_user = user_row["steve_user"] if user_row else None
+        chips      = fetch_chips_for_note(steve_user) if steve_user else []
+        stats_months = get_past_months(12)
+        monthly    = fetch_monthly_stats_for_chips(chips, stats_months)
+        total_kwh  = sum(s["kwh"] for s in monthly)
+        total_cnt  = sum(s["count"] for s in monthly)
+        init_kwh, init_count = total_kwh, total_cnt
+
     return render_template("dashboard.html",
                            months=months,
-                           role=session["role"],
+                           role=role,
                            username=session["username"],
-                           all_chips_info=all_chips_info)
+                           all_chips_info=all_chips_info,
+                           init_kwh=init_kwh,
+                           init_count=init_count)
+
+
+@app.route("/api/stats")
+@role_required("user", "userplus", "buchhaltung")
+def api_stats():
+    """JSON-Endpunkt für Chart.js-Daten."""
+    role = session["role"]
+    ym   = request.args.get("month", "")   # leer = Übersicht 12 Monate
+
+    if role == "buchhaltung":
+        if ym:
+            # Einzelmonat: stacked bar mit Tagen → hier kWh pro Note für diesen Monat
+            months = [{"value": ym,
+                       "label": datetime.strptime(ym, "%Y-%m").strftime("%B %Y"),
+                       "is_current": False}]
+        else:
+            months = get_past_months(12)
+        data = fetch_monthly_stats_by_note(months)
+        all_chips = [c["id_tag"] for c in fetch_all_chips()]
+        summary_stats = fetch_monthly_stats_for_chips(all_chips, months)
+        total_kwh  = round(sum(s["kwh"] for s in summary_stats), 3)
+        total_cnt  = sum(s["count"] for s in summary_stats)
+        return jsonify({
+            "type": "stacked",
+            "labels": data["labels"],
+            "datasets": data["datasets"],
+            "total_kwh": total_kwh,
+            "total_count": total_cnt,
+        })
+    else:
+        # user / userplus: einfacher Balken kWh pro Monat
+        db       = get_db()
+        user_row = db.execute("SELECT steve_user FROM web_users WHERE id=?",
+                              (session["user_id"],)).fetchone()
+        steve_user = user_row["steve_user"] if user_row else None
+        chips    = fetch_chips_for_note(steve_user) if steve_user else []
+        if ym:
+            months = [{"value": ym,
+                       "label": datetime.strptime(ym, "%Y-%m").strftime("%B %Y"),
+                       "is_current": False}]
+        else:
+            months = get_past_months(12)
+        stats = fetch_monthly_stats_for_chips(chips, months)
+        return jsonify({
+            "type": "bar",
+            "labels": [s["label"] for s in stats],
+            "data":   [s["kwh"]  for s in stats],
+            "total_kwh":   round(sum(s["kwh"]   for s in stats), 3),
+            "total_count": sum(s["count"] for s in stats),
+        })
 
 
 @app.route("/history")
@@ -460,6 +628,10 @@ def history():
     days_list = get_days_in_month(ym) if role in ("userplus", "buchhaltung") else []
     all_chips_info = fetch_all_chips() if role == "buchhaltung" else []
 
+    # Kein Export für den laufenden Monat
+    today_ym   = date.today().strftime("%Y-%m")
+    allow_export = (role == "buchhaltung") and (ym != today_ym)
+
     return render_template("history.html",
                            transactions=transactions,
                            period_label=period_label,
@@ -470,6 +642,7 @@ def history():
                            days_list=days_list,
                            all_chips_info=all_chips_info,
                            selected_chips=chip_filter,
+                           allow_export=allow_export,
                            username=session["username"])
 
 

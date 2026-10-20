@@ -158,6 +158,21 @@ body.login-page {
   object-fit: contain;
 }
 
+/* ── Stat cards ─────────────────────────── */
+.stat-icon {
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#statKwh, #statCount {
+  line-height: 1.2;
+  transition: opacity .2s;
+}
+
 /* ── Role hints in form ─────────────────── */
 .role-hints { min-height: 1.2em; font-size: .8rem; color: var(--text-muted); }
 
