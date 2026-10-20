@@ -24,7 +24,7 @@ services:
       # Docker-Socket für docker exec
       - /var/run/docker.sock:/var/run/docker.sock
       # Persistente SQLite-Datenbank (interne User)
-      - reporting-data:/app/users.db
+      - reporting-data:/app/data
     networks:
       - steve-steve-3120_default
 

@@ -31,7 +31,7 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH  = os.path.join(BASE_DIR, "users.db")
+DB_PATH  = os.path.join(BASE_DIR, "data", "users.db")
 
 # SteVe-DB-Verbindung aus Umgebungsvariablen (via docker-compose env_file)
 DOCKER_CONTAINER = os.environ.get("DOCKER_CONTAINER", "steve-steve-3120-db-1")

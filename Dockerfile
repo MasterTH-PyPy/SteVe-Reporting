@@ -13,4 +13,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Datenbank initialisieren und App starten
-CMD ["sh", "-c", "python -c 'from app import init_db; init_db()' && gunicorn -w 2 -b 0.0.0.0:5000 app:app"]
+CMD ["sh", "-c", "mkdir -p /app/data && python -c 'from app import init_db; init_db()' && gunicorn -w 2 -b 0.0.0.0:5000 app:app"]
