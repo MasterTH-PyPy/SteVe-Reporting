@@ -13,6 +13,8 @@ import io
 import sqlite3
 import subprocess
 import hashlib
+import re
+from werkzeug.security import generate_password_hash, check_password_hash as _check_pw
 import secrets
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
@@ -112,7 +114,26 @@ def init_db():
     db.close()
 
 def hash_password(pw: str) -> str:
-    return hashlib.sha256(pw.encode()).hexdigest()
+    return generate_password_hash(pw)
+
+def verify_password(pw: str, hashed: str) -> bool:
+    # Rückwärtskompatibilität: alte SHA-256-Hashes (64 hex Zeichen)
+    if len(hashed) == 64 and re.fullmatch(r'[0-9a-f]{64}', hashed):
+        import hashlib
+        return hashlib.sha256(pw.encode()).hexdigest() == hashed
+    return _check_pw(hashed, pw)
+
+def _validate_date(d: str) -> str:
+    """Wirft ValueError bei ungültigem Datumsformat."""
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?', d):
+        raise ValueError(f"Ungültiges Datum: {d!r}")
+    return d
+
+def _sanitize_chip(chip: str) -> str:
+    """Nur erlaubte Zeichen für RFID-Chip-IDs."""
+    if not re.fullmatch(r'[0-9A-Fa-f:\-]{1,64}', chip):
+        raise ValueError(f"Ungültige Chip-ID: {chip!r}")
+    return chip
 
 # ─────────────────────────────────────────────
 # SteVe-DB-Abfragen via docker exec
@@ -120,10 +141,11 @@ def hash_password(pw: str) -> str:
 
 def run_mysql(sql: str) -> list:
     cmd = [
-        "docker", "exec", DOCKER_CONTAINER,
+        "docker", "exec",
+        "--env", f"MYSQL_PWD={DB_PASSWORD}",  # nicht in Prozessliste sichtbar
+        DOCKER_CONTAINER,
         "mysql",
         f"--user={DB_USER}",
-        f"--password={DB_PASSWORD}",
         "--batch",
         "--skip-column-names",
         "--default-character-set=utf8mb4",
@@ -210,7 +232,9 @@ def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
     """Ladevorgänge für eine Liste von Chips in einem Zeitraum."""
     if not chips:
         return []
-    chip_list = ", ".join(f"'{c}'" for c in chips)
+    chip_list = ", ".join(f"'{_sanitize_chip(c)}'" for c in chips)
+    date_from = _validate_date(date_from)
+    date_to   = _validate_date(date_to)
     if STEVE_VERSION == "current":
         sql = f"""
             SELECT
@@ -280,7 +304,7 @@ def fetch_monthly_stats_for_chips(chips: list, months: list) -> list:
     """
     if not chips:
         return [{"month": m["value"], "label": m["label"], "kwh": 0.0, "count": 0} for m in months]
-    chip_list = ", ".join(f"'{c}'" for c in chips)
+    chip_list = ", ".join(f"'{_sanitize_chip(c)}'" for c in chips)
     # Ältester und neuester Monat – unabhängig von der Reihenfolge der Liste
     values   = sorted(m["value"] for m in months)
     oldest   = values[0] + "-01 00:00:00"
@@ -330,7 +354,7 @@ def fetch_daily_stats_for_chips(chips: list, ym: str) -> dict:
     """
     if not chips:
         return {}
-    chip_list  = ", ".join(f"'{c}'" for c in chips)
+    chip_list  = ", ".join(f"'{_sanitize_chip(c)}'" for c in chips)
     date_from, date_to = month_range(ym)
     if STEVE_VERSION == "current":
         sql = f"""
@@ -838,7 +862,7 @@ def login():
         user = db.execute(
             "SELECT * FROM web_users WHERE username = ?", (username,)
         ).fetchone()
-        if user and user["password"] == hash_password(password):
+        if user and verify_password(password, user["password"]):
             session.clear()
             session["user_id"] = user["id"]
             session["username"] = user["username"]
@@ -879,7 +903,7 @@ def change_password():
         confirm_pw  = request.form.get("confirm_password", "").strip()
         db = get_db()
         user = db.execute("SELECT * FROM web_users WHERE id=?", (session["user_id"],)).fetchone()
-        if not user or user["password"] != hash_password(current_pw):
+        if not user or not verify_password(current_pw, user["password"]):
             error = "Das aktuelle Passwort ist falsch."
         elif len(new_pw) < 6:
             error = "Das neue Passwort muss mindestens 6 Zeichen lang sein."
