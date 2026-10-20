@@ -51,8 +51,8 @@
     </span>
     <span class="spinner-border spinner-border-sm text-primary d-none" id="chartSpinner"></span>
   </div>
-  <div class="card-body" style="position:relative;min-height:260px">
-    <canvas id="statsChart"></canvas>
+  <div class="card-body" style="position:relative;height:280px">
+    <canvas id="statsChart" style="height:100%;width:100%"></canvas>
   </div>
 </div>
 
@@ -146,60 +146,58 @@ const PALETTE = [
 let chart = null;
 
 // ─── Chart initialisieren ───────────────────────────────────
-function initChart(type, labels, datasets, singleBar) {
+function initChart(type, labels, datasets) {
   const ctx = document.getElementById('statsChart').getContext('2d');
   if (chart) chart.destroy();
 
-  if (type === 'stacked' || (type === 'bar' && !singleBar)) {
-    // Gestapelter Balken (Buchhaltung) oder einfacher Balken (user)
-    const isStacked = type === 'stacked';
-    chart = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: labels,
-        datasets: isStacked
-          ? datasets.map((ds, i) => ({
-              label: ds.note,
-              data: ds.data,
-              backgroundColor: PALETTE[i % PALETTE.length] + 'CC',
-              borderColor:     PALETTE[i % PALETTE.length],
-              borderWidth: 1,
-            }))
-          : [{
-              label: 'kWh',
-              data: datasets,
-              backgroundColor: '#1a56dbCC',
-              borderColor:     '#1a56db',
-              borderWidth: 1,
-              borderRadius: 4,
-            }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: true,
-        plugins: {
-          legend: { display: isStacked, position: 'bottom' },
-          tooltip: {
-            callbacks: {
-              label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)} kWh`,
-              footer: isStacked ? (items) => {
-                const sum = items.reduce((a, b) => a + b.parsed.y, 0);
-                return `Gesamt: ${sum.toFixed(3)} kWh`;
-              } : undefined,
-            }
-          }
-        },
-        scales: {
-          x: { stacked: isStacked, grid: { display: false } },
-          y: {
-            stacked: isStacked,
-            title: { display: true, text: 'kWh' },
-            ticks: { callback: v => v.toFixed(1) },
+  const isStacked = (type === 'stacked');
+  chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: isStacked
+        ? datasets.map((ds, i) => ({
+            label: ds.note,
+            data: ds.data,
+            backgroundColor: PALETTE[i % PALETTE.length] + 'BB',
+            borderColor:     PALETTE[i % PALETTE.length],
+            borderWidth: 1,
+          }))
+        : [{
+            label: 'kWh',
+            data: datasets,
+            backgroundColor: '#1a56dbBB',
+            borderColor:     '#1a56db',
+            borderWidth: 1,
+            borderRadius: 4,
+          }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: isStacked, position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)} kWh`,
+            footer: isStacked ? (items) => {
+              const sum = items.reduce((a, b) => a + b.parsed.y, 0);
+              return `Gesamt: ${sum.toFixed(3)} kWh`;
+            } : undefined,
           }
         }
+      },
+      scales: {
+        x: { stacked: isStacked, grid: { display: false } },
+        y: {
+          stacked: isStacked,
+          beginAtZero: true,
+          title: { display: true, text: 'kWh' },
+          ticks: { callback: v => v.toFixed(1) },
+        }
       }
-    });
-  }
+    }
+  });
 }
 
 // ─── Stats laden ────────────────────────────────────────────
@@ -223,7 +221,7 @@ function loadStats(ym) {
       } else {
         titleEl.textContent = 'Verbrauch nach Mitarbeiter – letzte 12 Monate';
       }
-      initChart('stacked', d.labels, d.datasets, false);
+      initChart('stacked', d.labels, d.datasets);
       {% else %}
       if (ym) {
         const [y,m] = ym.split('-');
@@ -231,7 +229,7 @@ function loadStats(ym) {
       } else {
         titleEl.textContent = 'Verbrauch letzte 12 Monate';
       }
-      initChart('bar', d.labels, d.data, !!ym);
+      initChart('bar', d.labels, d.data);
       {% endif %}
     })
     .catch(() => spinner.classList.add('d-none'));
