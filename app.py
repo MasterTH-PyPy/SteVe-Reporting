@@ -10,6 +10,7 @@ Berechtigungsstufen:
 
 import os
 import io
+import logging
 import sqlite3
 import subprocess
 import hashlib
@@ -25,6 +26,9 @@ from flask import (
     session, flash, send_file, g, abort, jsonify
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_wtf.csrf import CSRFProtect
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -47,12 +51,39 @@ STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
 APP_VERSION = "1.1.0"
 
+# ─────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("steve")
+
+def audit(action: str, detail: str = ""):
+    ip   = request.remote_addr if request else "-"
+    user = session.get("username", "-") if session else "-"
+    msg  = f"{action} | user={user} | ip={ip}"
+    if detail:
+        msg += f" | {detail}"
+    log.info(msg)
+
+# ─────────────────────────────────────────────
+# App
+# ─────────────────────────────────────────────
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.config["SESSION_COOKIE_SECURE"]   = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["WTF_CSRF_TIME_LIMIT"]     = 3600  # 1h
+
+csrf    = CSRFProtect(app)
+limiter = Limiter(get_remote_address, app=app, default_limits=[])
 
 @app.context_processor
 def inject_globals():
@@ -852,6 +883,7 @@ def index():
 
 
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 def login():
     if "user_id" in session:
         return redirect(url_for("index"))
@@ -872,6 +904,7 @@ def login():
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             db.execute("UPDATE web_users SET last_login=? WHERE id=?", (now, user["id"]))
             db.commit()
+            audit("LOGIN_OK", f"role={user['role']}")
             # Erstes Login: created_at == password_changed_at → Passwort ändern erzwingen
             ca  = user["created_at"]
             pca = user["password_changed_at"]
@@ -881,6 +914,7 @@ def login():
             if user["role"] == "admin":
                 return redirect(url_for("admin_users"))
             return redirect(url_for("dashboard"))
+        log.warning("LOGIN_FAIL | user=%s | ip=%s", username, request.remote_addr)
         flash("Benutzername oder Passwort falsch.", "danger")
     return render_template("login.html")
 
@@ -917,6 +951,7 @@ def change_password():
             )
             db.commit()
             session.pop("must_change_password", None)
+            audit("PASSWORD_CHANGE")
             flash("Passwort erfolgreich geändert.", "success")
             role = session.get("role")
             if role == "admin":
@@ -1132,6 +1167,7 @@ def export():
     xlsx_bytes = build_excel(transactions, label, date_from, date_to,
                              chip_notes_map=chip_notes_map)
 
+    audit("EXPORT", f"month={ym} chips={len(chips)} rows={len(transactions)}")
     return send_file(
         io.BytesIO(xlsx_bytes),
         as_attachment=True,
@@ -1181,6 +1217,7 @@ def admin_user_new():
                     (uname, hash_password(pw), role, steve, now, pw_changed_at)
                 )
                 db.commit()
+                audit("USER_CREATE", f"new_user={uname} role={role}")
                 flash(f"Benutzer '{uname}' angelegt.", "success")
                 return redirect(url_for("admin_users"))
             except sqlite3.IntegrityError:
@@ -1250,6 +1287,7 @@ def admin_user_edit(uid):
                             (uname, role, steve, None, uid)
                         )
                 db.commit()
+                audit("USER_EDIT", f"target_uid={uid} new_name={uname} role={role}")
                 flash(f"Benutzer '{uname}' aktualisiert.", "success")
                 return redirect(url_for("admin_users"))
             except sqlite3.IntegrityError:
@@ -1271,8 +1309,10 @@ def admin_user_delete(uid):
         flash("Du kannst dich nicht selbst löschen.", "danger")
         return redirect(url_for("admin_users"))
     db = get_db()
+    target = db.execute("SELECT username FROM web_users WHERE id=?", (uid,)).fetchone()
     db.execute("DELETE FROM web_users WHERE id=?", (uid,))
     db.commit()
+    audit("USER_DELETE", f"target_uid={uid} target_name={target['username'] if target else '?'}")
     flash("Benutzer gelöscht.", "success")
     return redirect(url_for("admin_users"))
 
@@ -1285,8 +1325,10 @@ def admin_user_reset_pw(uid):
         flash("Neues Passwort darf nicht leer sein.", "danger")
         return redirect(url_for("admin_users"))
     db = get_db()
+    target = db.execute("SELECT username FROM web_users WHERE id=?", (uid,)).fetchone()
     db.execute("UPDATE web_users SET password=? WHERE id=?", (hash_password(new_pw), uid))
     db.commit()
+    audit("PASSWORD_RESET", f"target_uid={uid} target_name={target['username'] if target else '?'}")
     flash("Passwort wurde zurückgesetzt.", "success")
     return redirect(url_for("admin_users"))
 
