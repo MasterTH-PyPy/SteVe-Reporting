@@ -690,11 +690,9 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
 
         total_row = len(rows) + 4
         ws.row_dimensions[total_row].height = 20
-        ws.merge_cells(f"A{total_row}:{get_column_letter(7)}{total_row}")
-        c = ws.cell(row=total_row, column=1, value="SUMME")
-        c.font = _XL_TOTAL_FONT; c.fill = _XL_TOTAL_FILL
-        c.border = _XL_BORDER; c.alignment = _XL_RIGHT
 
+        # Zuerst alle Zellen der SUMME-Zeile stylen/befüllen,
+        # dann erst mergen (merge macht cols 2-6 zu MergedCell → danach read-only)
         for col_idx, (key, _, _, _align) in enumerate(_XL_COLUMNS, 1):
             if key in ("dauer_min", "energie_kwh"):
                 col_letter = get_column_letter(col_idx)
@@ -703,9 +701,16 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
                 c.font = _XL_TOTAL_FONT; c.fill = _XL_TOTAL_FILL
                 c.border = _XL_BORDER; c.alignment = _XL_RIGHT
                 c.number_format = "0.000" if key == "energie_kwh" else "0.0"
-            elif col_idx > 7:
-                c = ws.cell(row=total_row, column=col_idx, value="")
-                c.fill = _XL_TOTAL_FILL; c.border = _XL_BORDER
+            else:
+                val = "SUMME" if col_idx == 1 else ""
+                c = ws.cell(row=total_row, column=col_idx, value=val)
+                c.font = _XL_TOTAL_FONT; c.fill = _XL_TOTAL_FILL
+                c.border = _XL_BORDER
+                if col_idx == 1:
+                    c.alignment = _XL_RIGHT
+
+        # Merge label-Bereich A–F (Spalten 1–6); dauer_min (7) bleibt eigene Zelle
+        ws.merge_cells(f"A{total_row}:F{total_row}")
 
     buf = io.BytesIO()
     wb.save(buf)
