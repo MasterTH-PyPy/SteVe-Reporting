@@ -104,19 +104,14 @@
         </div>
         {% endif %}
 
-        {# Buttons #}
-        <div class="col-12 col-md-auto ms-md-auto d-flex gap-2 flex-wrap">
-          {% if role != 'buchhaltung' %}
+        {# Buttons – nur für user/userplus in der Steuerleiste #}
+        {% if role != 'buchhaltung' %}
+        <div class="col-12 col-md-auto ms-md-auto">
           <button type="submit" class="btn btn-primary btn-sm">
             <i class="bi bi-search me-1"></i>Ladevorgänge anzeigen
           </button>
-          {% endif %}
-          {% if role == 'buchhaltung' %}
-          <button type="button" class="btn btn-outline-success btn-sm" id="exportBtn" disabled>
-            <i class="bi bi-file-earmark-excel me-1"></i>Kompletten Monat als Excel exportieren
-          </button>
-          {% endif %}
         </div>
+        {% endif %}
 
       </div>
     </form>
@@ -134,6 +129,15 @@
   <div class="card-body" style="position:relative;height:280px">
     <canvas id="statsChart" style="height:100%;width:100%"></canvas>
   </div>
+
+  {# Export-Button unter dem Chart – nur Buchhaltung #}
+  {% if role == 'buchhaltung' %}
+  <div class="card-footer bg-transparent border-top-0 pt-0 pb-3 px-3">
+    <button type="button" class="btn btn-success w-100" id="exportBtn" disabled>
+      <i class="bi bi-file-earmark-excel me-2"></i>Kompletten Monat als Excel exportieren
+    </button>
+  </div>
+  {% endif %}
 </div>
 
 {# Export-Formular (versteckt) #}
