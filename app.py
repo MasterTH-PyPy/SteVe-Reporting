@@ -807,6 +807,11 @@ def admin_user_reset_pw(uid):
 # Error Handler
 # ─────────────────────────────────────────────
 
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
+
+
 @app.errorhandler(403)
 def forbidden(e):
     return render_template("error.html", code=403, msg="Zugriff verweigert."), 403

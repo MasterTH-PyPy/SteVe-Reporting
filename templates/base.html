@@ -24,7 +24,7 @@
       <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-1">
         {% if session.role != 'admin' %}
         <li class="nav-item">
-          <a class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}"
+          <a class="nav-link {% if request.endpoint and request.endpoint == 'dashboard' %}active{% endif %}"
              href="{{ url_for('dashboard') }}">
             <i class="bi bi-speedometer2 me-1"></i>Dashboard
           </a>
@@ -32,12 +32,13 @@
         {% endif %}
         {% if session.role == 'admin' %}
         <li class="nav-item">
-          <a class="nav-link {% if 'admin' in request.endpoint %}active{% endif %}"
+          <a class="nav-link {% if request.endpoint and 'admin' in (request.endpoint or '') %}active{% endif %}"
              href="{{ url_for('admin_users') }}">
             <i class="bi bi-people me-1"></i>Benutzerverwaltung
           </a>
         </li>
         {% endif %}
+
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle d-flex align-items-center gap-2" href="#"
              data-bs-toggle="dropdown">
