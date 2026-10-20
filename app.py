@@ -606,13 +606,15 @@ def dashboard():
         total_cnt  = sum(s["count"] for s in monthly)
         init_kwh, init_count = total_kwh, total_cnt
 
+    today_ym = date.today().strftime("%Y-%m")
     return render_template("dashboard.html",
                            months=months,
                            role=role,
                            username=session["username"],
                            all_chips_info=all_chips_info,
                            init_kwh=init_kwh,
-                           init_count=init_count)
+                           init_count=init_count,
+                           today_ym=today_ym)
 
 
 @app.route("/api/stats")

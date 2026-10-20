@@ -84,9 +84,12 @@
           <select name="month" class="form-select form-select-sm" id="monthSelect"
                   {% if role != 'buchhaltung' %}required{% endif %}
                   onchange="onMonthChange(this.value)">
-            <option value="">— Bitte wählen —</option>
+            <option value="">— letzte 12 Monate —</option>
             {% for m in months %}
-            <option value="{{ m.value }}">{{ m.label_select }}</option>
+            <option value="{{ m.value }}"
+              {% if role in ('user','userplus') and m.value == today_ym %}selected{% endif %}>
+              {{ m.label_select }}
+            </option>
             {% endfor %}
           </select>
         </div>
@@ -340,6 +343,11 @@ document.getElementById('exportBtn').addEventListener('click', function() {
 {% endif %}
 
 // ─── Initial laden ───────────────────────────────────────────
-window.addEventListener('load', function() { loadStats(''); });
+window.addEventListener('load', function() {
+  const sel = document.getElementById('monthSelect');
+  const initYm = sel ? sel.value : '';
+  if (initYm) onMonthChange(initYm);  // Tagesauswahl befüllen + Chart laden
+  else loadStats('');
+});
 </script>
 {% endblock %}
