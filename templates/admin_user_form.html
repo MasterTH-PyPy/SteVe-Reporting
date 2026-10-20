@@ -20,6 +20,7 @@
     <div class="card border-0 shadow-sm">
       <div class="card-body p-4">
         <form method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
             <label class="form-label fw-semibold">Benutzername <span class="text-danger">*</span></label>
             <input type="text" name="username" class="form-control"
