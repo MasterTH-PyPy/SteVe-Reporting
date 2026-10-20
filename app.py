@@ -81,7 +81,8 @@ def init_db():
             role                TEXT    NOT NULL DEFAULT 'user',
             steve_user          TEXT    DEFAULT NULL,
             created_at          TEXT    DEFAULT NULL,
-            password_changed_at TEXT    DEFAULT NULL
+            password_changed_at TEXT    DEFAULT NULL,
+            last_login          TEXT    DEFAULT NULL
         );
     """)
     # Migration: Spalten nachrüsten falls sie noch fehlen
@@ -90,6 +91,8 @@ def init_db():
         db.execute("ALTER TABLE web_users ADD COLUMN created_at TEXT DEFAULT NULL")
     if "password_changed_at" not in cols:
         db.execute("ALTER TABLE web_users ADD COLUMN password_changed_at TEXT DEFAULT NULL")
+    if "last_login" not in cols:
+        db.execute("ALTER TABLE web_users ADD COLUMN last_login TEXT DEFAULT NULL")
     db.commit()
 
     row = db.execute("SELECT COUNT(*) AS cnt FROM web_users").fetchone()
@@ -814,6 +817,10 @@ def login():
             session["username"] = user["username"]
             session["role"] = user["role"]
             session.permanent = True
+            # Last-Login timestamp aktualisieren
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            db.execute("UPDATE web_users SET last_login=? WHERE id=?", (now, user["id"]))
+            db.commit()
             # Erstes Login: created_at == password_changed_at → Passwort ändern erzwingen
             ca  = user["created_at"]
             pca = user["password_changed_at"]

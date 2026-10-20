@@ -20,11 +20,15 @@
             <th>Benutzername</th>
             <th>Rolle</th>
             <th>SteVe-Mitarbeiter</th>
+            <th>Letzter Login</th>
+            <th>PW geändert</th>
+            <th class="text-center">PW-Pflicht</th>
             <th class="text-end">Aktionen</th>
           </tr>
         </thead>
         <tbody>
           {% for u in users %}
+          {% set must_change = u.created_at and u.password_changed_at and u.created_at == u.password_changed_at %}
           <tr>
             <td class="fw-semibold">
               <i class="bi bi-person-circle me-1 text-muted"></i>{{ u.username }}
@@ -33,6 +37,39 @@
               <span class="badge role-badge-{{ u.role }}">{{ u.role }}</span>
             </td>
             <td class="text-muted small">{{ u.steve_user or '—' }}</td>
+            <td class="small text-muted text-nowrap">
+              {% if u.last_login %}
+                <i class="bi bi-clock me-1"></i>{{ u.last_login[:16].replace('T',' ') }}
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td class="small text-nowrap">
+              {% if u.password_changed_at and u.created_at != u.password_changed_at %}
+                <span class="text-success">
+                  <i class="bi bi-check-circle me-1"></i>{{ u.password_changed_at[:16].replace('T',' ') }}
+                </span>
+              {% else %}
+                <span class="text-warning">
+                  <i class="bi bi-exclamation-triangle me-1"></i>Nie geändert
+                </span>
+              {% endif %}
+            </td>
+            <td class="text-center">
+              {% if u.role != 'admin' %}
+                {% if must_change %}
+                  <span class="badge bg-warning text-dark" title="Muss Passwort beim nächsten Login ändern">
+                    <i class="bi bi-shield-exclamation me-1"></i>Ja
+                  </span>
+                {% else %}
+                  <span class="badge bg-success" title="Kein Passwort-Änderungszwang">
+                    <i class="bi bi-shield-check me-1"></i>Nein
+                  </span>
+                {% endif %}
+              {% else %}
+                <span class="text-muted small">—</span>
+              {% endif %}
+            </td>
             <td class="text-end">
               <div class="d-flex justify-content-end gap-1">
                 <a href="{{ url_for('admin_user_edit', uid=u.id) }}"
