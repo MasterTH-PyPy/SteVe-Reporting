@@ -22,6 +22,7 @@ from flask import (
     Flask, render_template, request, redirect, url_for,
     session, flash, send_file, g, abort, jsonify
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -46,6 +47,10 @@ APP_VERSION = "1.1.0"
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.config["SESSION_COOKIE_SECURE"]   = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 @app.context_processor
 def inject_globals():
