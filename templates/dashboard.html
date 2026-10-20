@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – SteVe Ladehistorie{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h3 class="fw-bold mb-1">
+    <i class="bi bi-speedometer2 me-2 text-primary"></i>Ladehistorie
+  </h3>
+  <p class="text-muted mb-0">Wählen Sie einen Zeitraum aus.</p>
+</div>
+
+<div class="row justify-content-center">
+  <div class="col-lg-6 col-md-9">
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-4">
+        <form method="get" action="{{ url_for('history') }}">
+
+          <div class="mb-3">
+            <label class="form-label fw-semibold">
+              <i class="bi bi-calendar3 me-1 text-primary"></i>Monat
+            </label>
+            <select name="month" class="form-select" id="monthSelect" required
+                    onchange="onMonthChange(this.value)">
+              <option value="">— Bitte wählen —</option>
+              {% for m in months %}
+              <option value="{{ m.value }}">{{ m.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          {% if role in ('userplus', 'buchhaltung') %}
+          <div class="mb-3" id="daySection" style="display:none">
+            <label class="form-label fw-semibold">
+              <i class="bi bi-calendar-day me-1 text-primary"></i>Einzeltag
+              <span class="text-muted fw-normal small">(optional)</span>
+            </label>
+            <select name="day" class="form-select" id="daySelect">
+              <option value="">Ganzen Monat anzeigen</option>
+            </select>
+          </div>
+          {% endif %}
+
+          {% if role == 'buchhaltung' %}
+          <div class="mb-3">
+            <label class="form-label fw-semibold">
+              <i class="bi bi-credit-card me-1 text-primary"></i>Chips filtern
+              <span class="text-muted fw-normal small">(leer = alle)</span>
+            </label>
+            <select name="chips" class="form-select" multiple size="6" id="chipSelect">
+              {% for chip in all_chips_info %}
+              <option value="{{ chip.id_tag }}">
+                {{ chip.note if chip.note else chip.id_tag }}
+                {% if chip.note %} ({{ chip.id_tag }}){% endif %}
+              </option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Strg+Klick für Mehrfachauswahl</div>
+          </div>
+          {% endif %}
+
+          <div class="d-grid gap-2">
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-search me-2"></i>Ladevorgänge anzeigen
+            </button>
+            {% if role == 'buchhaltung' %}
+            <button type="submit" form="exportForm" class="btn btn-outline-success">
+              <i class="bi bi-file-earmark-excel me-2"></i>Als Excel exportieren
+            </button>
+            {% endif %}
+          </div>
+        </form>
+
+        {% if role == 'buchhaltung' %}
+        {# Separates Formular für Export – übernimmt dieselben Werte per JS #}
+        <form id="exportForm" method="get" action="{{ url_for('export') }}" style="display:none">
+          <input type="hidden" name="month" id="exportMonth"/>
+          <div id="exportChips"></div>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function onMonthChange(ym) {
+  {% if role in ('userplus', 'buchhaltung') %}
+  const sec = document.getElementById('daySection');
+  const sel = document.getElementById('daySelect');
+  if (!ym) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  const [y, mo] = ym.split('-').map(Number);
+  const days = new Date(y, mo, 0).getDate();
+  sel.innerHTML = '<option value="">Ganzen Monat anzeigen</option>';
+  for (let d = 1; d <= days; d++) {
+    const dd = String(d).padStart(2, '0');
+    sel.innerHTML += `<option value="${ym}-${dd}">${dd}.${String(mo).padStart(2,'0')}.${y}</option>`;
+  }
+  {% endif %}
+  {% if role == 'buchhaltung' %}
+  document.getElementById('exportMonth').value = ym;
+  {% endif %}
+}
+
+{% if role == 'buchhaltung' %}
+document.getElementById('exportForm').addEventListener('submit', function() {
+  const chips = document.getElementById('chipSelect');
+  const container = document.getElementById('exportChips');
+  container.innerHTML = '';
+  if (chips) {
+    Array.from(chips.selectedOptions).forEach(opt => {
+      const inp = document.createElement('input');
+      inp.type = 'hidden'; inp.name = 'chips'; inp.value = opt.value;
+      container.appendChild(inp);
+    });
+  }
+});
+{% endif %}
+</script>
+{% endblock %}

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Ladehistorie {{ period_label }} – SteVe{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4">
+  <div>
+    <h3 class="fw-bold mb-1">
+      <i class="bi bi-list-ul me-2 text-primary"></i>{{ period_label }}
+    </h3>
+    <p class="text-muted mb-0">
+      {{ transactions|length }} Ladevorgänge ·
+      <strong>{{ "%.3f"|format(total_energy) }} kWh</strong> gesamt
+    </p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    {% if role == 'buchhaltung' %}
+    {# Export-Link mit denselben Parametern #}
+    <a href="{{ url_for('export', month=ym, **{'chips': selected_chips}) }}"
+       class="btn btn-outline-success btn-sm">
+      <i class="bi bi-file-earmark-excel me-1"></i>Excel exportieren
+    </a>
+    {% endif %}
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-arrow-left me-1"></i>Zurück
+    </a>
+  </div>
+</div>
+
+{# Tagesfilter für userplus + buchhaltung #}
+{% if role in ('userplus', 'buchhaltung') and days_list %}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-body py-3">
+    <form method="get" action="{{ url_for('history') }}" class="d-flex align-items-center gap-3 flex-wrap">
+      <input type="hidden" name="month" value="{{ ym }}"/>
+      {% for chip in selected_chips %}
+      <input type="hidden" name="chips" value="{{ chip }}"/>
+      {% endfor %}
+      <label class="fw-semibold small mb-0">
+        <i class="bi bi-calendar-day me-1 text-primary"></i>Einzeltag:
+      </label>
+      <select name="day" class="form-select form-select-sm" style="width:auto"
+              onchange="this.form.submit()">
+        <option value="">Ganzen Monat</option>
+        {% for d in days_list %}
+        <option value="{{ d.value }}" {% if d.value == day %}selected{% endif %}>
+          {{ d.label }}
+        </option>
+        {% endfor %}
+      </select>
+      {% if day %}
+      <a href="{{ url_for('history', month=ym) }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-x me-1"></i>Zurücksetzen
+      </a>
+      {% endif %}
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{# Chip-Filter (Buchhaltung) #}
+{% if role == 'buchhaltung' and all_chips_info %}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-body py-3">
+    <form method="get" action="{{ url_for('history') }}" class="d-flex align-items-center gap-3 flex-wrap">
+      <input type="hidden" name="month" value="{{ ym }}"/>
+      {% if day %}<input type="hidden" name="day" value="{{ day }}"/>{% endif %}
+      <label class="fw-semibold small mb-0">
+        <i class="bi bi-credit-card me-1 text-primary"></i>Chips:
+      </label>
+      <select name="chips" class="form-select form-select-sm" multiple style="min-width:250px;height:80px">
+        {% for chip in all_chips_info %}
+        <option value="{{ chip.id_tag }}"
+          {% if chip.id_tag in selected_chips %}selected{% endif %}>
+          {{ chip.note if chip.note else chip.id_tag }}
+          {% if chip.note %} ({{ chip.id_tag }}){% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-primary btn-sm">
+        <i class="bi bi-filter me-1"></i>Filtern
+      </button>
+      {% if selected_chips %}
+      <a href="{{ url_for('history', month=ym, day=day) }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-x me-1"></i>Alle
+      </a>
+      {% endif %}
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{# Tabelle #}
+{% if transactions %}
+<div class="card border-0 shadow-sm">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover table-sm mb-0 align-middle">
+        <thead class="table-dark">
+          <tr>
+            <th>Chip</th>
+            {% if role == 'buchhaltung' %}<th>Benutzer</th>{% endif %}
+            <th>Station</th>
+            <th>Anschluss</th>
+            <th>Start</th>
+            <th>Ende</th>
+            <th class="text-end">Dauer (min)</th>
+            <th class="text-end">Energie (kWh)</th>
+            <th>Stopgrund</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tx in transactions %}
+          <tr>
+            <td><code class="small">{{ tx.chip }}</code></td>
+            {% if role == 'buchhaltung' %}<td>{{ tx.benutzer }}</td>{% endif %}
+            <td>{{ tx.station }}</td>
+            <td class="text-center">{{ tx.anschluss }}</td>
+            <td class="text-nowrap small">{{ tx.start_time }}</td>
+            <td class="text-nowrap small">{{ tx.stop_time }}</td>
+            <td class="text-end">{{ tx.dauer_min }}</td>
+            <td class="text-end fw-semibold">
+              {% if tx.energie_kwh and tx.energie_kwh != 'NULL' %}
+                {{ "%.3f"|format(tx.energie_kwh|float) }}
+              {% else %}–{% endif %}
+            </td>
+            <td class="small text-muted">{{ tx.stopgrund }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="table-light fw-bold">
+          <tr>
+            <td colspan="{% if role == 'buchhaltung' %}7{% else %}6{% endif %}"
+                class="text-end">Gesamt:</td>
+            <td class="text-end">{{ "%.3f"|format(total_energy) }}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+  Keine Ladevorgänge im gewählten Zeitraum gefunden.
+</div>
+{% endif %}
+{% endblock %}

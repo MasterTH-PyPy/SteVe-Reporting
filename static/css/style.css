@@ -1,0 +1,168 @@
+/* ─────────────────────────────────────────────
+   SteVe Ladehistorie – Stylesheet
+   ───────────────────────────────────────────── */
+
+:root {
+  --primary: #1a56db;
+  --primary-dark: #1344ba;
+  --nav-bg: #0f172a;
+  --nav-border: #1e293b;
+  --body-bg: #f1f5f9;
+  --card-bg: #ffffff;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --badge-radius: 6px;
+}
+
+/* ── Base ─────────────────────────────────── */
+body {
+  background: var(--body-bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 0.9rem;
+}
+
+.main-content {
+  min-height: calc(100vh - 56px);
+}
+
+/* ── Navbar ───────────────────────────────── */
+.navbar {
+  background: var(--nav-bg);
+  border-bottom: 1px solid var(--nav-border);
+  min-height: 56px;
+}
+
+.navbar-brand {
+  font-size: 1rem;
+  letter-spacing: 0.01em;
+}
+
+.nav-subtitle {
+  color: rgba(255,255,255,.45);
+  font-weight: 300;
+  font-size: 0.85rem;
+}
+
+.navbar .nav-link {
+  color: rgba(255,255,255,.75);
+  border-radius: 6px;
+  padding: .4rem .75rem;
+  transition: background .15s, color .15s;
+}
+
+.navbar .nav-link:hover,
+.navbar .nav-link.active {
+  color: #fff;
+  background: rgba(255,255,255,.08);
+}
+
+/* ── Role badges ──────────────────────────── */
+.badge {
+  font-weight: 500;
+  font-size: .7rem;
+  letter-spacing: .03em;
+  border-radius: var(--badge-radius);
+  padding: .25em .55em;
+}
+
+.role-badge-admin       { background: #7c3aed; color: #fff; }
+.role-badge-buchhaltung { background: #0891b2; color: #fff; }
+.role-badge-userplus    { background: #059669; color: #fff; }
+.role-badge-user        { background: #475569; color: #fff; }
+
+/* ── Page header ─────────────────────────── */
+.page-header h3 { font-size: 1.4rem; }
+
+/* ── Cards ───────────────────────────────── */
+.card { border-radius: 12px; }
+
+/* ── Tables ──────────────────────────────── */
+.table thead th {
+  font-size: .8rem;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.table tbody tr:hover { background: #f8fafc; }
+
+/* ── Buttons ─────────────────────────────── */
+.btn-xs {
+  padding: .2rem .45rem;
+  font-size: .78rem;
+  line-height: 1.4;
+  border-radius: 5px;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.btn-primary:hover {
+  background: var(--primary-dark);
+  border-color: var(--primary-dark);
+}
+
+/* ── Login page ─────────────────────────── */
+body.login-page {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-wrapper {
+  width: 100%;
+  max-width: 400px;
+  padding: 1rem;
+}
+
+.login-card {
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--card-bg);
+}
+
+.login-header {
+  background: linear-gradient(135deg, #0f172a, #1a3a6b);
+  color: #fff;
+  padding: 2rem 1.5rem 1.5rem;
+}
+
+.login-subtitle { color: rgba(255,255,255,.5); font-size: .85rem; }
+
+/* Navbar logo */
+.nav-logo {
+  height: 32px;
+  width: auto;
+  /* Logo ist blau auf weiß – weiß machen via filter */
+  filter: brightness(0) invert(1);
+  object-fit: contain;
+}
+
+/* Login logo */
+.login-logo-wrap {
+  background: rgba(255,255,255,.12);
+  border-radius: 12px;
+  display: inline-block;
+  padding: .75rem 1.25rem;
+}
+
+.login-logo {
+  height: 64px;
+  width: auto;
+  filter: brightness(0) invert(1);
+  object-fit: contain;
+}
+
+/* ── Role hints in form ─────────────────── */
+.role-hints { min-height: 1.2em; font-size: .8rem; color: var(--text-muted); }
+
+/* ── Responsive tweaks ─────────────────── */
+@media (max-width: 576px) {
+  .page-header h3 { font-size: 1.15rem; }
+  .table { font-size: .8rem; }
+}

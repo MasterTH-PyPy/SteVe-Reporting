@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Benutzerverwaltung – SteVe{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <h3 class="fw-bold mb-0">
+    <i class="bi bi-people me-2 text-primary"></i>Benutzerverwaltung
+  </h3>
+  <a href="{{ url_for('admin_user_new') }}" class="btn btn-primary btn-sm">
+    <i class="bi bi-plus-lg me-1"></i>Neuer Benutzer
+  </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th>Benutzername</th>
+            <th>Rolle</th>
+            <th>SteVe-Mitarbeiter</th>
+            <th class="text-end">Aktionen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td class="fw-semibold">
+              <i class="bi bi-person-circle me-1 text-muted"></i>{{ u.username }}
+            </td>
+            <td>
+              <span class="badge role-badge-{{ u.role }}">{{ u.role }}</span>
+            </td>
+            <td class="text-muted small">{{ u.steve_user or '—' }}</td>
+            <td class="text-end">
+              <div class="d-flex justify-content-end gap-1">
+                <a href="{{ url_for('admin_user_edit', uid=u.id) }}"
+                   class="btn btn-outline-primary btn-xs" title="Bearbeiten">
+                  <i class="bi bi-pencil"></i>
+                </a>
+
+                {# Passwort zurücksetzen (Inline-Formular) #}
+                <button type="button" class="btn btn-outline-warning btn-xs"
+                        title="Passwort zurücksetzen"
+                        data-bs-toggle="modal"
+                        data-bs-target="#pwModal{{ u.id }}">
+                  <i class="bi bi-key"></i>
+                </button>
+
+                {% if u.id != session.user_id %}
+                <form method="post"
+                      action="{{ url_for('admin_user_delete', uid=u.id) }}"
+                      onsubmit="return confirm('Benutzer {{ u.username }} wirklich löschen?')">
+                  <button type="submit" class="btn btn-outline-danger btn-xs" title="Löschen">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+
+          {# Passwort-Modal #}
+          <div class="modal fade" id="pwModal{{ u.id }}" tabindex="-1">
+            <div class="modal-dialog modal-sm">
+              <div class="modal-content">
+                <div class="modal-header">
+                  <h6 class="modal-title">Passwort zurücksetzen</h6>
+                  <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="post" action="{{ url_for('admin_user_reset_pw', uid=u.id) }}">
+                  <div class="modal-body">
+                    <label class="form-label small fw-semibold">Neues Passwort für <em>{{ u.username }}</em></label>
+                    <input type="password" name="new_password" class="form-control"
+                           placeholder="Neues Passwort" required/>
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Abbrechen</button>
+                    <button type="submit" class="btn btn-warning btn-sm">Speichern</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
