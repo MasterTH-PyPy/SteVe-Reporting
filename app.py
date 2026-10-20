@@ -111,18 +111,26 @@ def run_mysql(sql: str) -> list:
     return rows
 
 
-def fetch_steve_users() -> list:
-    """Alle SteVe-Mitarbeiter (web_user) aus der SteVe-Datenbank."""
-    if STEVE_VERSION == "current":
-        sql = "SELECT username FROM web_user ORDER BY username;"
-    else:
-        sql = "SELECT CONCAT(first_name,' ',last_name) FROM `user` ORDER BY first_name;"
+def fetch_chip_notes() -> list:
+    """Alle eindeutigen, nicht-leeren Notes aus ocpp_tag (HEX-kodiert)."""
+    sql = "SELECT DISTINCT HEX(note) AS note_hex FROM ocpp_tag WHERE note IS NOT NULL AND note != '' ORDER BY note;"
     rows = run_mysql(sql)
-    return [r[0] for r in rows if r]
+    notes = []
+    for r in rows:
+        if not r or not r[0]:
+            continue
+        try:
+            note = bytes.fromhex(r[0]).decode("utf-8")
+        except Exception:
+            note = r[0]
+        note = " - ".join(p.strip() for p in note.replace("\r", "\n").split("\n") if p.strip())
+        if note:
+            notes.append(note)
+    return notes
 
 
-def fetch_assigned_steve_users() -> list:
-    """SteVe-Usernames, die bereits einem internen Web-User zugewiesen sind."""
+def fetch_assigned_notes() -> list:
+    """Notes, die bereits einem internen Web-User zugewiesen sind."""
     db = get_db()
     rows = db.execute(
         "SELECT steve_user FROM web_users WHERE steve_user IS NOT NULL"
@@ -130,27 +138,26 @@ def fetch_assigned_steve_users() -> list:
     return [r["steve_user"] for r in rows]
 
 
-def fetch_chips_for_steve_user(steve_username: str) -> list:
-    """Alle RFID-Chips, die einem SteVe-Mitarbeiter zugeordnet sind."""
-    if STEVE_VERSION == "current":
-        sql = f"""
-            SELECT ot.id_tag
-            FROM ocpp_tag ot
-            JOIN user_ocpp_tag uot ON ot.ocpp_tag_pk = uot.ocpp_tag_pk
-            JOIN web_user wu ON uot.user_pk = wu.web_user_pk
-            WHERE wu.username = '{steve_username}'
-            ORDER BY ot.id_tag;
-        """
-    else:
-        sql = f"""
-            SELECT ot.id_tag
-            FROM ocpp_tag ot
-            JOIN `user` u ON ot.ocpp_tag_pk = u.ocpp_tag_pk
-            WHERE CONCAT(u.first_name,' ',u.last_name) = '{steve_username}'
-            ORDER BY ot.id_tag;
-        """
+def fetch_chips_for_note(note: str) -> list:
+    """Alle RFID-Chips, deren Note mit dem gespeicherten Wert übereinstimmt."""
+    # Note HEX-kodiert vergleichen um Sonderzeichen zu umgehen
+    sql = f"SELECT id_tag FROM ocpp_tag WHERE HEX(note) != '' ORDER BY id_tag;"
     rows = run_mysql(sql)
-    return [r[0] for r in rows if r]
+    # Alle Chips laden und Note dekodiert vergleichen
+    sql_all = "SELECT id_tag, HEX(note) AS note_hex FROM ocpp_tag WHERE note IS NOT NULL AND note != '';"
+    rows_all = run_mysql(sql_all)
+    chips = []
+    for r in rows_all:
+        if len(r) < 2:
+            continue
+        try:
+            chip_note = bytes.fromhex(r[1]).decode("utf-8")
+        except Exception:
+            chip_note = r[1]
+        chip_note = " - ".join(p.strip() for p in chip_note.replace("\r", "\n").split("\n") if p.strip())
+        if chip_note == note:
+            chips.append(r[0])
+    return chips
 
 
 def fetch_all_chips() -> list:
@@ -437,9 +444,9 @@ def history():
         user = db.execute("SELECT * FROM web_users WHERE id=?", (session["user_id"],)).fetchone()
         steve_user = user["steve_user"] if user else None
         if not steve_user:
-            flash("Deinem Konto ist noch kein SteVe-Mitarbeiter zugewiesen.", "warning")
+            flash("Deinem Konto ist noch kein Chip-Kommentar zugewiesen.", "warning")
             return redirect(url_for("dashboard"))
-        chips = fetch_chips_for_steve_user(steve_user)
+        chips = fetch_chips_for_note(steve_user)
 
     transactions = fetch_transactions(chips, date_from, date_to)
 
@@ -504,9 +511,9 @@ def admin_users():
 @app.route("/admin/users/new", methods=["GET", "POST"])
 @role_required("admin")
 def admin_user_new():
-    steve_users = fetch_steve_users()
-    assigned    = fetch_assigned_steve_users()
-    available   = [u for u in steve_users if u not in assigned]
+    all_notes = fetch_chip_notes()
+    assigned  = fetch_assigned_notes()
+    available = [n for n in all_notes if n not in assigned]
 
     if request.method == "POST":
         uname = request.form.get("username", "").strip()
@@ -547,10 +554,10 @@ def admin_user_edit(uid):
     if not user:
         abort(404)
 
-    steve_users = fetch_steve_users()
-    assigned    = fetch_assigned_steve_users()
-    # Aktuell zugewiesener Mitarbeiter bleibt auswählbar
-    available = [u for u in steve_users if u not in assigned or u == user["steve_user"]]
+    all_notes = fetch_chip_notes()
+    assigned  = fetch_assigned_notes()
+    # Aktuell zugewiesene Note bleibt auswählbar
+    available = [n for n in all_notes if n not in assigned or n == user["steve_user"]]
 
     if request.method == "POST":
         uname = request.form.get("username", "").strip()

@@ -56,23 +56,23 @@
           {# SteVe-Mitarbeiter – nur relevant für user / userplus #}
           <div class="mb-4" id="steveSection">
             <label class="form-label fw-semibold">
-              SteVe-Mitarbeiter verknüpfen
-              <span class="text-muted fw-normal small">(für User / User Plus)</span>
+              Chip-Kommentar zuweisen
+              <span class="text-muted fw-normal small">(für User / User Plus — alle Chips mit diesem Kommentar)</span>
             </label>
             {% if available_steve_users %}
             <select name="steve_user" class="form-select">
-              <option value="">— Kein Mitarbeiter zuweisen —</option>
+              <option value="">— Keinen Kommentar zuweisen —</option>
               {% for su in available_steve_users %}
               <option value="{{ su }}" {% if form.get('steve_user') == su %}selected{% endif %}>
                 {{ su }}
               </option>
               {% endfor %}
             </select>
-            <div class="form-text">Bereits zugewiesene Mitarbeiter werden nicht angezeigt.</div>
+            <div class="form-text">Bereits zugewiesene Kommentare werden nicht angezeigt.</div>
             {% else %}
             <p class="text-muted small">
               <i class="bi bi-info-circle me-1"></i>
-              Alle SteVe-Mitarbeiter sind bereits zugewiesen oder es gibt keine.
+              Alle Chip-Kommentare sind bereits zugewiesen oder es gibt keine.
             </p>
             <input type="hidden" name="steve_user" value=""/>
             {% endif %}
