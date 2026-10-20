@@ -446,6 +446,7 @@ _XL_LINK_FONT    = Font(name=FONT_NAME, size=10, color="1F4E79", underline="sing
 
 # Spalten-Definition: (key_in_tx, Spaltenüberschrift, Breite, Ausrichtung)
 _XL_COLUMNS = [
+    ("id",            "Trans.-ID",          10, _XL_RIGHT),
     ("chip",          "RFID-Chip",          16, _XL_LEFT),
     ("benutzer",      "Benutzer",           18, _XL_LEFT),
     ("station",       "Ladestation",        22, _XL_LEFT),
@@ -507,24 +508,32 @@ def _xl_sheet_header(ws, title_val, sub_val, n_cols):
     ws.row_dimensions[3].height = 8
 
 
-def build_excel(transactions: list, label: str, date_from: str = "", date_to: str = "") -> bytes:
+def build_excel(transactions: list, label: str, date_from: str = "", date_to: str = "",
+                chip_notes_map: dict = None) -> bytes:
     """Baut eine Excel-Datei im Format des Original-Skripts.
 
     Sheets:
       1. Auswertung nach Benutzer  – Zusammenfassung pro Name
       2. Übersicht pro Chip        – alle Chips mit Link zu Detailblatt
       3..N  Ein Detailblatt pro RFID-Chip
+
+    chip_notes_map: optional dict {id_tag -> note_string} für alle bekannten Chips,
+                    auch solche ohne Transaktionen im Zeitraum.
     """
+    if chip_notes_map is None:
+        chip_notes_map = {}
+
     # ── Daten nach Chip gruppieren ───────────────────────────
     all_data: dict = {}
-    chip_notes: dict = {}
     for tx in transactions:
         chip = tx.get("chip", "")
         if not chip:
             continue
         all_data.setdefault(chip, []).append(tx)
-        if chip not in chip_notes:
-            chip_notes[chip] = tx.get("benutzer", "") or ""
+
+    # Alle bekannten Chips einschließen (auch ohne Transaktionen)
+    for chip in chip_notes_map:
+        all_data.setdefault(chip, [])
 
     # ── Statistiken vorberechnen ─────────────────────────────
     chip_stats: dict = {}
@@ -534,7 +543,8 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
         duration = sum(float(r.get("dauer_min") or 0)   for r in rows
                        if r.get("dauer_min") not in (None, "NULL", ""))
         benutzer = (rows[0].get("benutzer") or "").strip() if rows else ""
-        note     = chip_notes.get(chip, "")
+        # note aus der Map bevorzugen (enthält Chip-Kommentar aus ocpp_tag)
+        note = chip_notes_map.get(chip, "") or ""
         chip_stats[chip] = {
             "energy":   round(energy, 3),
             "duration": round(duration, 1),
@@ -631,9 +641,9 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
     ws_summary.column_dimensions["F"].width = 22
 
     # ── Ein Detailblatt pro Chip ─────────────────────────────
-    for chip, rows in all_data.items():
+    for chip, rows in sorted(all_data.items()):
         safe_name = chip[:31]
-        note      = chip_notes.get(chip, "")
+        note      = chip_notes_map.get(chip, "") or ""
         ws = wb.create_sheet(safe_name)
         ws.sheet_view.showGridLines = False
         ws.freeze_panes = "A4"
@@ -692,7 +702,12 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
         ws.row_dimensions[total_row].height = 20
 
         # Zuerst alle Zellen der SUMME-Zeile stylen/befüllen,
-        # dann erst mergen (merge macht cols 2-6 zu MergedCell → danach read-only)
+        # Spaltennummern für SUM-Spalten ermitteln
+        dauer_col  = next(i for i, (k,_,_,_) in enumerate(_XL_COLUMNS, 1) if k == "dauer_min")
+        energie_col= next(i for i, (k,_,_,_) in enumerate(_XL_COLUMNS, 1) if k == "energie_kwh")
+        merge_end  = dauer_col - 1  # Merge endet eine Spalte vor dauer_min
+
+        # Alle Zellen ZUERST befüllen/stylen, dann erst mergen
         for col_idx, (key, _, _, _align) in enumerate(_XL_COLUMNS, 1):
             if key in ("dauer_min", "energie_kwh"):
                 col_letter = get_column_letter(col_idx)
@@ -709,8 +724,8 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
                 if col_idx == 1:
                     c.alignment = _XL_RIGHT
 
-        # Merge label-Bereich A–F (Spalten 1–6); dauer_min (7) bleibt eigene Zelle
-        ws.merge_cells(f"A{total_row}:F{total_row}")
+        # Merge: A bis Spalte vor dauer_min; dauer_min + energie_kwh bleiben eigene Zellen
+        ws.merge_cells(f"A{total_row}:{get_column_letter(merge_end)}{total_row}")
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1070,13 +1085,21 @@ def export():
 
     date_from, date_to = month_range(ym)
     label = datetime.strptime(ym, "%Y-%m").strftime("%B %Y")
+
+    # Alle bekannten Chips mit Notes laden (auch ohne Transaktionen im Zeitraum)
+    all_chips_info = fetch_all_chips()
     if chip_filter:
         chips = chip_filter
+        chip_notes_map = {c["id_tag"]: c["note"] for c in all_chips_info
+                          if c["id_tag"] in chip_filter}
     else:
-        filtered = filter_chips_by_note(fetch_all_chips(), note_filter)
+        filtered = filter_chips_by_note(all_chips_info, note_filter)
         chips = [c["id_tag"] for c in filtered]
+        chip_notes_map = {c["id_tag"]: c["note"] for c in filtered}
+
     transactions = fetch_transactions(chips, date_from, date_to)
-    xlsx_bytes = build_excel(transactions, label, date_from, date_to)
+    xlsx_bytes = build_excel(transactions, label, date_from, date_to,
+                             chip_notes_map=chip_notes_map)
 
     return send_file(
         io.BytesIO(xlsx_bytes),
