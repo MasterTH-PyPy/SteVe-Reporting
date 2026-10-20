@@ -303,6 +303,73 @@ def fetch_monthly_stats_for_chips(chips: list, months: list) -> list:
     return result
 
 
+def fetch_daily_stats_for_chips(chips: list, ym: str) -> dict:
+    """
+    kWh + Anzahl pro Tag für einen Monat.
+    Rückgabe: {'YYYY-MM-DD': kwh, 'YYYY-MM-DD_count': int, ...}
+    """
+    if not chips:
+        return {}
+    chip_list  = ", ".join(f"'{c}'" for c in chips)
+    date_from, date_to = month_range(ym)
+    if STEVE_VERSION == "current":
+        sql = f"""
+            SELECT DATE(ts.start_timestamp) AS d,
+                   COUNT(*) AS cnt,
+                   ROUND(SUM((te.stop_value - ts.start_value)/1000.0),3) AS kwh
+            FROM transaction_start ts
+            LEFT JOIN transaction_stop te ON ts.transaction_pk = te.transaction_pk
+            WHERE ts.id_tag IN ({chip_list})
+              AND ts.start_timestamp BETWEEN '{date_from}' AND '{date_to}'
+              AND te.stop_value IS NOT NULL
+            GROUP BY d ORDER BY d;
+        """
+    else:
+        sql = f"""
+            SELECT DATE(t.start_timestamp) AS d,
+                   COUNT(*) AS cnt,
+                   ROUND(SUM((t.stop_value - t.start_value)/1000.0),3) AS kwh
+            FROM `transaction` t
+            WHERE t.id_tag IN ({chip_list})
+              AND t.start_timestamp BETWEEN '{date_from}' AND '{date_to}'
+              AND t.stop_value IS NOT NULL
+            GROUP BY d ORDER BY d;
+        """
+    rows   = run_mysql(sql)
+    result = {}
+    for r in rows:
+        if len(r) >= 3:
+            result[r[0]]               = float(r[2] or 0)
+            result[r[0] + "_count"]    = int(r[1] or 0)
+    return result
+
+
+def fetch_daily_stats_by_note(ym: str) -> dict:
+    """
+    Buchhaltung: kWh pro Tag und Note für einen Monat.
+    Rückgabe: {'notes': [...], 'days': ['YYYY-MM-DD',...],
+               'datasets': [{'note':..., 'data':[kwh,...]}, ...]}
+    """
+    all_chips_info = fetch_all_chips()
+    note_to_chips  = {}
+    for c in all_chips_info:
+        note = c["note"] or c["id_tag"]
+        note_to_chips.setdefault(note, []).append(c["id_tag"])
+
+    days = get_days_in_month(ym)
+    datasets = []
+    for note, chips in sorted(note_to_chips.items()):
+        stats = fetch_daily_stats_for_chips(chips, ym)
+        datasets.append({
+            "note": note,
+            "data": [stats.get(d["value"], 0.0) for d in days],
+        })
+    return {
+        "labels":   [d["label"] for d in days],
+        "datasets": datasets,
+    }
+
+
 def fetch_monthly_stats_by_note(months: list) -> dict:
     """
     Buchhaltung: kWh pro Monat aufgeteilt nach Chip-Note.
@@ -544,18 +611,21 @@ def api_stats():
     ym   = request.args.get("month", "")   # leer = Übersicht 12 Monate
 
     if role == "buchhaltung":
-        if ym:
-            months = [{"value": ym,
-                       "label": datetime.strptime(ym, "%Y-%m").strftime("%B %Y"),
-                       "is_current": False}]
-        else:
-            # Aktueller Monat + 12 vergangene, älteste zuerst für Chart
-            months = list(reversed(get_months(12, include_current=True)))
-        data = fetch_monthly_stats_by_note(months)
         all_chips = [c["id_tag"] for c in fetch_all_chips()]
-        summary_stats = fetch_monthly_stats_for_chips(all_chips, months)
-        total_kwh  = round(sum(s["kwh"] for s in summary_stats), 3)
-        total_cnt  = sum(s["count"] for s in summary_stats)
+        if ym:
+            # Tagesauflösung: gestapelter Balken pro Tag, aufgeteilt nach Note
+            data = fetch_daily_stats_by_note(ym)
+            day_stats = fetch_daily_stats_for_chips(all_chips, ym)
+            days = get_days_in_month(ym)
+            total_kwh = round(sum(day_stats.get(d["value"], 0.0) for d in days), 3)
+            total_cnt = sum(day_stats.get(d["value"] + "_count", 0) for d in days)
+        else:
+            # Monatsauflösung: gestapelter Balken pro Monat
+            months = list(reversed(get_months(12, include_current=True)))
+            data = fetch_monthly_stats_by_note(months)
+            summary = fetch_monthly_stats_for_chips(all_chips, months)
+            total_kwh = round(sum(s["kwh"] for s in summary), 3)
+            total_cnt = sum(s["count"] for s in summary)
         return jsonify({
             "type": "stacked",
             "labels": data["labels"],
@@ -564,27 +634,37 @@ def api_stats():
             "total_count": total_cnt,
         })
     else:
-        # user / userplus: einfacher Balken kWh pro Monat
+        # user / userplus: einfacher Balken kWh pro Monat oder pro Tag
         db       = get_db()
         user_row = db.execute("SELECT steve_user FROM web_users WHERE id=?",
                               (session["user_id"],)).fetchone()
         steve_user = user_row["steve_user"] if user_row else None
         chips    = fetch_chips_for_note(steve_user) if steve_user else []
         if ym:
-            months = [{"value": ym,
-                       "label": datetime.strptime(ym, "%Y-%m").strftime("%B %Y"),
-                       "is_current": False}]
+            # Tagesauflösung für den gewählten Monat
+            days  = get_days_in_month(ym)
+            stats = fetch_daily_stats_for_chips(chips, ym)
+            labels = [d["label"] for d in days]
+            data   = [stats.get(d["value"], 0.0) for d in days]
+            counts = [stats.get(d["value"] + "_count", 0) for d in days]
+            return jsonify({
+                "type": "bar_daily",
+                "labels": labels,
+                "data":   data,
+                "total_kwh":   round(sum(data), 3),
+                "total_count": sum(counts),
+            })
         else:
             # Aktueller Monat + 12 vergangene, älteste zuerst für Chart
             months = list(reversed(get_months(12, include_current=True)))
-        stats = fetch_monthly_stats_for_chips(chips, months)
-        return jsonify({
-            "type": "bar",
-            "labels": [s["label"] for s in stats],
-            "data":   [s["kwh"]  for s in stats],
-            "total_kwh":   round(sum(s["kwh"]   for s in stats), 3),
-            "total_count": sum(s["count"] for s in stats),
-        })
+            stats  = fetch_monthly_stats_for_chips(chips, months)
+            return jsonify({
+                "type": "bar",
+                "labels": [s["label"] for s in stats],
+                "data":   [s["kwh"]  for s in stats],
+                "total_kwh":   round(sum(s["kwh"]   for s in stats), 3),
+                "total_count": sum(s["count"] for s in stats),
+            })
 
 
 @app.route("/history")

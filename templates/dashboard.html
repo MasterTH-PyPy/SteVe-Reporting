@@ -148,6 +148,9 @@ function initChart(type, labels, datasets) {
   if (chart) chart.destroy();
 
   const isStacked = (type === 'stacked');
+  // Tagesansicht: viele Labels → rotieren
+  const manyLabels = labels.length > 12;
+
   chart = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -185,7 +188,15 @@ function initChart(type, labels, datasets) {
         }
       },
       scales: {
-        x: { stacked: isStacked, grid: { display: false } },
+        x: {
+          stacked: isStacked,
+          grid: { display: false },
+          ticks: manyLabels ? {
+            maxRotation: 45,
+            minRotation: 45,
+            font: { size: 10 },
+          } : {},
+        },
         y: {
           stacked: isStacked,
           beginAtZero: true,
@@ -228,12 +239,12 @@ function loadStats(ym) {
       // Chart-Titel + Diagramm
       {% if role == 'buchhaltung' %}
       titleEl.textContent = ym
-        ? 'Verbrauch nach Mitarbeiter – ' + monthLabel(ym)
+        ? 'Verbrauch nach Mitarbeiter – ' + monthLabel(ym) + ' (Tage)'
         : 'Verbrauch nach Mitarbeiter – letzte 12 Monate';
       initChart('stacked', d.labels, d.datasets);
       {% else %}
       titleEl.textContent = ym
-        ? 'Verbrauch – ' + monthLabel(ym)
+        ? 'Verbrauch – ' + monthLabel(ym) + ' (Tage)'
         : 'Verbrauch letzte 12 Monate';
       initChart('bar', d.labels, d.data);
       {% endif %}
