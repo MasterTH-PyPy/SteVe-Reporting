@@ -18,8 +18,8 @@
           <i class="bi bi-lightning-charge-fill fs-3 text-primary"></i>
         </div>
         <div>
-          <div class="text-muted small">
-            {% if role == 'buchhaltung' %}Letzter Monat{% else %}Letzte 12 Monate{% endif %}
+          <div class="text-muted small" id="statLabel1">
+            {% if role == 'buchhaltung' %}Verbrauch letzter Monat{% else %}Verbrauch letzte 12 Monate{% endif %}
           </div>
           <div class="fw-bold fs-4" id="statKwh">{{ "%.3f"|format(init_kwh) }} kWh</div>
         </div>
@@ -33,7 +33,7 @@
           <i class="bi bi-plug-fill fs-3 text-success"></i>
         </div>
         <div>
-          <div class="text-muted small">
+          <div class="text-muted small" id="statLabel2">
             {% if role == 'buchhaltung' %}Ladevorgänge letzter Monat{% else %}Ladevorgänge letzte 12 Monate{% endif %}
           </div>
           <div class="fw-bold fs-4" id="statCount">{{ init_count }}</div>
@@ -72,7 +72,7 @@
                 onchange="onMonthChange(this.value)">
           <option value="">— Bitte wählen —</option>
           {% for m in months %}
-          <option value="{{ m.value }}">{{ m.label }}</option>
+          <option value="{{ m.value }}">{{ m.label_select }}</option>
           {% endfor %}
         </select>
       </div>
@@ -130,11 +130,8 @@
 {% endblock %}
 
 {% block scripts %}
-{# Chart.js via CDN #}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"
-        integrity="sha512-ZwR1/gSZM3ai6vCdI+LVF1zSq/5HznD3oD+sCoJrzXJ+yKen9RWAw5Dgp0x4cjx/7AnxgDyxy68V3APGknQkg=="
-        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-
+{# Chart.js – kein SRI damit kein stiller Block bei Hash-Mismatch #}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 // ─── Farb-Palette ───────────────────────────────────────────
 const PALETTE = [
@@ -201,38 +198,50 @@ function initChart(type, labels, datasets) {
 }
 
 // ─── Stats laden ────────────────────────────────────────────
+function monthLabel(ym) {
+  const [y, m] = ym.split('-');
+  return new Date(y, m - 1).toLocaleDateString('de-DE', {month: 'long', year: 'numeric'});
+}
+
 function loadStats(ym) {
-  const spinner = document.getElementById('chartSpinner');
+  const spinner  = document.getElementById('chartSpinner');
+  const kwh      = document.getElementById('statKwh');
+  const cnt      = document.getElementById('statCount');
+  const lbl1     = document.getElementById('statLabel1');
+  const lbl2     = document.getElementById('statLabel2');
+  const titleEl  = document.getElementById('chartTitle');
   spinner.classList.remove('d-none');
+
   const url = '/api/stats' + (ym ? '?month=' + ym : '');
   fetch(url)
-    .then(r => r.json())
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(d => {
       spinner.classList.add('d-none');
       // Stat-Cards
-      document.getElementById('statKwh').textContent   = d.total_kwh.toFixed(3) + ' kWh';
-      document.getElementById('statCount').textContent  = d.total_count;
-      // Chart-Titel
-      const titleEl = document.getElementById('chartTitle');
-      {% if role == 'buchhaltung' %}
-      if (ym) {
-        const [y,m] = ym.split('-');
-        titleEl.textContent = 'Verbrauch nach Mitarbeiter – ' + new Date(y,m-1).toLocaleDateString('de-DE',{month:'long',year:'numeric'});
-      } else {
-        titleEl.textContent = 'Verbrauch nach Mitarbeiter – letzte 12 Monate';
+      kwh.textContent = d.total_kwh.toFixed(3) + ' kWh';
+      cnt.textContent = d.total_count;
+      if (lbl1 && lbl2) {
+        const period = ym ? monthLabel(ym) : 'letzte 12 Monate';
+        lbl1.textContent = 'Verbrauch ' + period;
+        lbl2.textContent = 'Ladevorgänge ' + period;
       }
+      // Chart-Titel + Diagramm
+      {% if role == 'buchhaltung' %}
+      titleEl.textContent = ym
+        ? 'Verbrauch nach Mitarbeiter – ' + monthLabel(ym)
+        : 'Verbrauch nach Mitarbeiter – letzte 12 Monate';
       initChart('stacked', d.labels, d.datasets);
       {% else %}
-      if (ym) {
-        const [y,m] = ym.split('-');
-        titleEl.textContent = 'Verbrauch – ' + new Date(y,m-1).toLocaleDateString('de-DE',{month:'long',year:'numeric'});
-      } else {
-        titleEl.textContent = 'Verbrauch letzte 12 Monate';
-      }
+      titleEl.textContent = ym
+        ? 'Verbrauch – ' + monthLabel(ym)
+        : 'Verbrauch letzte 12 Monate';
       initChart('bar', d.labels, d.data);
       {% endif %}
     })
-    .catch(() => spinner.classList.add('d-none'));
+    .catch(err => {
+      spinner.classList.add('d-none');
+      console.error('Stats-Fehler:', err);
+    });
 }
 
 // ─── Monat-Auswahl ──────────────────────────────────────────
@@ -290,7 +299,9 @@ document.getElementById('exportBtn').addEventListener('click', function() {
 document.getElementById('exportBtn').disabled = true;
 {% endif %}
 
-// Initiales Laden (Übersicht ohne Monatsfilter)
-loadStats('');
+// Initiales Laden – nach vollständigem Seitenaufbau inkl. Chart.js
+window.addEventListener('load', function() {
+  loadStats('');
+});
 </script>
 {% endblock %}

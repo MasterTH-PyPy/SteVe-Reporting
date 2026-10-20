@@ -41,9 +41,17 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
+APP_VERSION = "1.1.0"
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+
+@app.context_processor
+def inject_globals():
+    return {
+        "app_version": APP_VERSION,
+        "steve_version": STEVE_VERSION,
+    }
 
 # ─────────────────────────────────────────────
 # SQLite – internes User-Management
@@ -410,11 +418,10 @@ def get_months(n=12, include_current=True) -> list:
     for i in range(start, n + start):
         d = today - relativedelta(months=i)
         label = d.strftime("%B %Y")
-        if i == 0:
-            label += " (aktuell)"
         months.append({
             "value": d.strftime("%Y-%m"),
             "label": label,
+            "label_select": label + (" (aktuell)" if i == 0 else ""),
             "is_current": i == 0,
         })
     return months
@@ -542,12 +549,12 @@ def api_stats():
 
     if role == "buchhaltung":
         if ym:
-            # Einzelmonat: stacked bar mit Tagen → hier kWh pro Note für diesen Monat
             months = [{"value": ym,
                        "label": datetime.strptime(ym, "%Y-%m").strftime("%B %Y"),
                        "is_current": False}]
         else:
-            months = get_past_months(12)
+            # Aktueller Monat + 12 vergangene, älteste zuerst für Chart
+            months = list(reversed(get_months(12, include_current=True)))
         data = fetch_monthly_stats_by_note(months)
         all_chips = [c["id_tag"] for c in fetch_all_chips()]
         summary_stats = fetch_monthly_stats_for_chips(all_chips, months)
@@ -572,7 +579,8 @@ def api_stats():
                        "label": datetime.strptime(ym, "%Y-%m").strftime("%B %Y"),
                        "is_current": False}]
         else:
-            months = get_past_months(12)
+            # Aktueller Monat + 12 vergangene, älteste zuerst für Chart
+            months = list(reversed(get_months(12, include_current=True)))
         stats = fetch_monthly_stats_for_chips(chips, months)
         return jsonify({
             "type": "bar",

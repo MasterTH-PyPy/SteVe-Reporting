@@ -176,6 +176,19 @@ body.login-page {
 /* ── Role hints in form ─────────────────── */
 .role-hints { min-height: 1.2em; font-size: .8rem; color: var(--text-muted); }
 
+/* ── Footer ─────────────────────────────── */
+.app-footer {
+  background: var(--body-bg);
+  font-size: .78rem;
+  color: var(--text-muted);
+}
+.app-footer code {
+  font-size: .78rem;
+  color: var(--primary);
+  background: none;
+  padding: 0;
+}
+
 /* ── Responsive tweaks ─────────────────── */
 @media (max-width: 576px) {
   .page-header h3 { font-size: 1.15rem; }
