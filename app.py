@@ -1098,6 +1098,7 @@ def admin_user_new():
         role  = request.form.get("role", "user")
         steve = request.form.get("steve_user", "") or None
 
+        force_pw = request.form.get("force_pw_change") == "on"
         if not uname or not pw:
             flash("Benutzername und Passwort sind Pflichtfelder.", "danger")
         elif role not in ROLES:
@@ -1106,9 +1107,12 @@ def admin_user_new():
             db = get_db()
             try:
                 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                # force_pw_change: created_at == password_changed_at → Login erzwingt Änderung
+                # kein force: password_changed_at auf NULL setzen → kein Zwang
+                pw_changed_at = now if force_pw else None
                 db.execute(
                     "INSERT INTO web_users (username, password, role, steve_user, created_at, password_changed_at) VALUES (?,?,?,?,?,?)",
-                    (uname, hash_password(pw), role, steve, now, now)
+                    (uname, hash_password(pw), role, steve, now, pw_changed_at)
                 )
                 db.commit()
                 flash(f"Benutzer '{uname}' angelegt.", "success")
@@ -1143,6 +1147,7 @@ def admin_user_edit(uid):
         role  = request.form.get("role", "user")
         steve = request.form.get("steve_user", "") or None
 
+        force_pw = request.form.get("force_pw_change") == "on"
         if not uname:
             flash("Benutzername ist ein Pflichtfeld.", "danger")
         elif role not in ROLES:
@@ -1150,15 +1155,34 @@ def admin_user_edit(uid):
         else:
             try:
                 if pw:
-                    db.execute(
-                        "UPDATE web_users SET username=?, password=?, role=?, steve_user=? WHERE id=?",
-                        (uname, hash_password(pw), role, steve, uid)
-                    )
+                    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    # Wenn force_pw_change: created_at auf now setzen, password_changed_at auch auf now
+                    # → ca == pca → Zwang beim nächsten Login
+                    # Wenn nicht: password_changed_at auf NULL → kein Zwang
+                    if force_pw and role != "admin":
+                        db.execute(
+                            "UPDATE web_users SET username=?, password=?, role=?, steve_user=?, created_at=?, password_changed_at=? WHERE id=?",
+                            (uname, hash_password(pw), role, steve, now, now, uid)
+                        )
+                    else:
+                        db.execute(
+                            "UPDATE web_users SET username=?, password=?, role=?, steve_user=?, password_changed_at=? WHERE id=?",
+                            (uname, hash_password(pw), role, steve, None, uid)
+                        )
                 else:
-                    db.execute(
-                        "UPDATE web_users SET username=?, role=?, steve_user=? WHERE id=?",
-                        (uname, role, steve, uid)
-                    )
+                    # Kein neues Passwort — nur force_pw_change Flag anpassen
+                    if force_pw and role != "admin":
+                        # created_at auf jetzt, password_changed_at auch → Zwang
+                        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                        db.execute(
+                            "UPDATE web_users SET username=?, role=?, steve_user=?, created_at=?, password_changed_at=? WHERE id=?",
+                            (uname, role, steve, now, now, uid)
+                        )
+                    else:
+                        db.execute(
+                            "UPDATE web_users SET username=?, role=?, steve_user=?, password_changed_at=? WHERE id=?",
+                            (uname, role, steve, None, uid)
+                        )
                 db.commit()
                 flash(f"Benutzer '{uname}' aktualisiert.", "success")
                 return redirect(url_for("admin_users"))

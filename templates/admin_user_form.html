@@ -78,6 +78,35 @@
             {% endif %}
           </div>
 
+          {# Passwort-Änderung erzwingen #}
+          {% if action == 'new' %}
+          <div class="mb-4">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="force_pw_change"
+                     id="forcePwChange" checked>
+              <label class="form-check-label" for="forcePwChange">
+                Muss Passwort beim ersten Login ändern
+              </label>
+            </div>
+          </div>
+          {% elif form.get('role') != 'admin' %}
+          <div class="mb-4">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="force_pw_change"
+                     id="forcePwChange"
+                     {% if form.get('created_at') and form.get('password_changed_at') and form.get('created_at') == form.get('password_changed_at') %}checked{% endif %}>
+              <label class="form-check-label" for="forcePwChange">
+                Muss Passwort beim nächsten Login ändern
+              </label>
+            </div>
+            {% if form.get('created_at') and form.get('password_changed_at') and form.get('created_at') == form.get('password_changed_at') %}
+            <div class="form-text text-warning">
+              <i class="bi bi-exclamation-triangle me-1"></i>Passwort wurde noch nie geändert.
+            </div>
+            {% endif %}
+          </div>
+          {% endif %}
+
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary flex-grow-1">
               <i class="bi bi-check-lg me-1"></i>
