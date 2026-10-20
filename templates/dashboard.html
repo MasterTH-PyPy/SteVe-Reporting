@@ -19,7 +19,7 @@
         </div>
         <div>
           <div class="text-muted small" id="statLabel1">
-            {% if role == 'buchhaltung' %}Verbrauch letzter Monat{% else %}Verbrauch letzte 12 Monate{% endif %}
+            {% if role == 'buchhaltung' %}Verbrauch letzte 12 Monate{% else %}Verbrauch letzte 12 Monate{% endif %}
           </div>
           <div class="fw-bold fs-4" id="statKwh">{{ "%.3f"|format(init_kwh) }} kWh</div>
         </div>
@@ -34,7 +34,7 @@
         </div>
         <div>
           <div class="text-muted small" id="statLabel2">
-            {% if role == 'buchhaltung' %}Ladevorgänge letzter Monat{% else %}Ladevorgänge letzte 12 Monate{% endif %}
+            {% if role == 'buchhaltung' %}Ladevorgänge letzte 12 Monate{% else %}Ladevorgänge letzte 12 Monate{% endif %}
           </div>
           <div class="fw-bold fs-4" id="statCount">{{ init_count }}</div>
         </div>
@@ -43,117 +43,108 @@
   </div>
 </div>
 
-{# ── Chart ────────────────────────────────────────────────── #}
+{# ── Steuerleiste + Chart in einer Card ───────────────────── #}
 <div class="card border-0 shadow-sm mb-4">
-  <div class="card-header bg-transparent border-bottom-0 pt-3 pb-0 d-flex align-items-center justify-content-between">
-    <span class="fw-semibold" id="chartTitle">
-      {% if role == 'buchhaltung' %}Verbrauch nach Mitarbeiter – letzte 12 Monate{% else %}Verbrauch letzte 12 Monate{% endif %}
+
+  {# Steuerleiste #}
+  <div class="card-header bg-transparent border-bottom pt-3 pb-3">
+    <form method="get" action="{{ url_for('history') }}" id="historyForm">
+      {% if role == 'buchhaltung' %}
+      <input type="hidden" name="note_filter" id="historyNoteFilter" value="Mitarbeiter"/>
+      {% endif %}
+
+      <div class="row g-2 align-items-end">
+
+        {% if role == 'buchhaltung' %}
+        {# Kommentar-Filter #}
+        <div class="col-12 col-md-4">
+          <label class="form-label fw-semibold small mb-1">
+            <i class="bi bi-funnel me-1 text-primary"></i>Kommentar-Filter
+          </label>
+          <div class="input-group input-group-sm">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="text" class="form-control" id="noteFilterInput"
+                   placeholder="z.B. Mitarbeiter, WI-AB 123 …"
+                   value="Mitarbeiter"
+                   oninput="onNoteFilterChange(this.value)">
+            <button class="btn btn-outline-secondary" type="button"
+                    onclick="document.getElementById('noteFilterInput').value='';onNoteFilterChange('')"
+                    title="Filter zurücksetzen">
+              <i class="bi bi-x-lg"></i>
+            </button>
+          </div>
+        </div>
+        {% endif %}
+
+        {# Monat #}
+        <div class="col-12 {% if role == 'buchhaltung' %}col-md-4{% elif role in ('userplus',) %}col-md-6{% else %}col-md-8{% endif %}">
+          <label class="form-label fw-semibold small mb-1">
+            <i class="bi bi-calendar3 me-1 text-primary"></i>Monat
+          </label>
+          <select name="month" class="form-select form-select-sm" id="monthSelect"
+                  {% if role != 'buchhaltung' %}required{% endif %}
+                  onchange="onMonthChange(this.value)">
+            <option value="">— Bitte wählen —</option>
+            {% for m in months %}
+            <option value="{{ m.value }}">{{ m.label_select }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        {# Einzeltag (userplus + buchhaltung) #}
+        {% if role in ('userplus', 'buchhaltung') %}
+        <div class="col-12 col-md-4" id="daySection" style="display:none">
+          <label class="form-label fw-semibold small mb-1">
+            <i class="bi bi-calendar-day me-1 text-primary"></i>Einzeltag
+            <span class="text-muted fw-normal">(optional)</span>
+          </label>
+          <select name="day" class="form-select form-select-sm" id="daySelect">
+            <option value="">Ganzen Monat</option>
+          </select>
+        </div>
+        {% endif %}
+
+        {# Buttons #}
+        <div class="col-12 col-md-auto ms-md-auto d-flex gap-2 flex-wrap">
+          {% if role != 'buchhaltung' %}
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-search me-1"></i>Ladevorgänge anzeigen
+          </button>
+          {% endif %}
+          {% if role == 'buchhaltung' %}
+          <button type="button" class="btn btn-outline-success btn-sm" id="exportBtn" disabled>
+            <i class="bi bi-file-earmark-excel me-1"></i>Kompletten Monat als Excel exportieren
+          </button>
+          {% endif %}
+        </div>
+
+      </div>
+    </form>
+  </div>
+
+  {# Chart-Header #}
+  <div class="px-3 pt-3 pb-0 d-flex align-items-center justify-content-between">
+    <span class="fw-semibold small text-muted" id="chartTitle">
+      {% if role == 'buchhaltung' %}Verbrauch [Mitarbeiter] – letzte 12 Monate{% else %}Verbrauch letzte 12 Monate{% endif %}
     </span>
     <span class="spinner-border spinner-border-sm text-primary d-none" id="chartSpinner"></span>
   </div>
+
+  {# Chart #}
   <div class="card-body" style="position:relative;height:280px">
     <canvas id="statsChart" style="height:100%;width:100%"></canvas>
   </div>
 </div>
 
-{# ── Auswahl-Formular ─────────────────────────────────────── #}
-<div class="card shadow-sm border-0">
-  <div class="card-header bg-transparent border-bottom-0 pt-3 pb-0">
-    <span class="fw-semibold"><i class="bi bi-search me-2 text-primary"></i>Zeitraum anzeigen</span>
-  </div>
-  <div class="card-body p-4">
-    <form method="get" action="{{ url_for('history') }}" id="historyForm">
-      {# Note-Filter als verstecktes Feld wird per JS befüllt #}
-      {% if role == 'buchhaltung' %}
-      <input type="hidden" name="note_filter" id="historyNoteFilter" value="Mitarbeiter"/>
-      {% endif %}
+{# Export-Formular (versteckt) #}
+{% if role == 'buchhaltung' %}
+<form id="exportForm" method="get" action="{{ url_for('export') }}" style="display:none">
+  <input type="hidden" name="month" id="exportMonth"/>
+  <input type="hidden" name="note_filter" id="exportNoteFilter" value="Mitarbeiter"/>
+  <div id="exportChips"></div>
+</form>
+{% endif %}
 
-      {% if role == 'buchhaltung' %}
-      <div class="mb-3">
-        <label class="form-label fw-semibold">
-          <i class="bi bi-funnel me-1 text-primary"></i>Kommentar-Filter
-          <span class="text-muted fw-normal small">(Kennzeichen, Name, Bezug …)</span>
-        </label>
-        <div class="input-group">
-          <span class="input-group-text"><i class="bi bi-search"></i></span>
-          <input type="text" class="form-control" id="noteFilterInput" name="note_filter"
-                 placeholder="z.B. Mitarbeiter, WI-AB 123 …"
-                 value="Mitarbeiter"
-                 oninput="onNoteFilterChange(this.value)">
-          <button class="btn btn-outline-secondary" type="button"
-                  onclick="document.getElementById('noteFilterInput').value='';onNoteFilterChange('')"
-                  title="Filter zurücksetzen">
-            <i class="bi bi-x-lg"></i>
-          </button>
-        </div>
-        <div class="form-text">Filtert Chips und Grafik nach Kommentar-Inhalt (Teiltext genügt).</div>
-      </div>
-      {% endif %}
-
-      <div class="mb-3">
-        <label class="form-label fw-semibold">
-          <i class="bi bi-calendar3 me-1 text-primary"></i>Monat
-        </label>
-        <select name="month" class="form-select" id="monthSelect" required
-                onchange="onMonthChange(this.value)">
-          <option value="">— Bitte wählen —</option>
-          {% for m in months %}
-          <option value="{{ m.value }}">{{ m.label_select }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      {% if role in ('userplus', 'buchhaltung') %}
-      <div class="mb-3" id="daySection" style="display:none">
-        <label class="form-label fw-semibold">
-          <i class="bi bi-calendar-day me-1 text-primary"></i>Einzeltag
-          <span class="text-muted fw-normal small">(optional)</span>
-        </label>
-        <select name="day" class="form-select" id="daySelect">
-          <option value="">Ganzen Monat anzeigen</option>
-        </select>
-      </div>
-      {% endif %}
-
-      {% if role == 'buchhaltung' %}
-      <div class="mb-3">
-        <label class="form-label fw-semibold">
-          <i class="bi bi-credit-card me-1 text-primary"></i>Chips filtern
-          <span class="text-muted fw-normal small">(leer = alle)</span>
-        </label>
-        <select name="chips" class="form-select" multiple size="6" id="chipSelect">
-          {% for chip in all_chips_info %}
-          <option value="{{ chip.id_tag }}">
-            {{ chip.note if chip.note else chip.id_tag }}
-            {% if chip.note %} ({{ chip.id_tag }}){% endif %}
-          </option>
-          {% endfor %}
-        </select>
-        <div class="form-text">Strg+Klick für Mehrfachauswahl</div>
-      </div>
-      {% endif %}
-
-      <div class="d-grid gap-2">
-        <button type="submit" class="btn btn-primary">
-          <i class="bi bi-search me-2"></i>Ladevorgänge anzeigen
-        </button>
-        {% if role == 'buchhaltung' %}
-        <button type="button" class="btn btn-outline-success" id="exportBtn">
-          <i class="bi bi-file-earmark-excel me-2"></i>Als Excel exportieren
-        </button>
-        {% endif %}
-      </div>
-    </form>
-
-    {% if role == 'buchhaltung' %}
-    <form id="exportForm" method="get" action="{{ url_for('export') }}" style="display:none">
-      <input type="hidden" name="month" id="exportMonth"/>
-      <input type="hidden" name="note_filter" id="exportNoteFilter" value="Mitarbeiter"/>
-      <div id="exportChips"></div>
-    </form>
-    {% endif %}
-  </div>
-</div>
 {% endblock %}
 
 {% block scripts %}
@@ -175,7 +166,6 @@ function initChart(type, labels, datasets) {
   if (chart) chart.destroy();
 
   const isStacked = (type === 'stacked');
-  // Tagesansicht: viele Labels → rotieren
   const manyLabels = labels.length > 12;
 
   chart = new Chart(ctx, {
@@ -218,11 +208,7 @@ function initChart(type, labels, datasets) {
         x: {
           stacked: isStacked,
           grid: { display: false },
-          ticks: manyLabels ? {
-            maxRotation: 45,
-            minRotation: 45,
-            font: { size: 10 },
-          } : {},
+          ticks: manyLabels ? { maxRotation: 45, minRotation: 45, font: { size: 10 } } : {},
         },
         y: {
           stacked: isStacked,
@@ -235,7 +221,7 @@ function initChart(type, labels, datasets) {
   });
 }
 
-// ─── Stats laden ────────────────────────────────────────────
+// ─── Hilfsfunktionen ────────────────────────────────────────
 function monthLabel(ym) {
   const [y, m] = ym.split('-');
   return new Date(y, m - 1).toLocaleDateString('de-DE', {month: 'long', year: 'numeric'});
@@ -246,13 +232,10 @@ function getNoteFilter() {
   return el ? el.value.trim() : '';
 }
 
+// ─── Stats laden ────────────────────────────────────────────
 function loadStats(ym) {
-  const spinner  = document.getElementById('chartSpinner');
-  const kwh      = document.getElementById('statKwh');
-  const cnt      = document.getElementById('statCount');
-  const lbl1     = document.getElementById('statLabel1');
-  const lbl2     = document.getElementById('statLabel2');
-  const titleEl  = document.getElementById('chartTitle');
+  const spinner = document.getElementById('chartSpinner');
+  const titleEl = document.getElementById('chartTitle');
   spinner.classList.remove('d-none');
 
   const params = new URLSearchParams();
@@ -262,19 +245,18 @@ function loadStats(ym) {
   if (nf) params.set('note_filter', nf);
   {% endif %}
   const url = '/api/stats' + (params.toString() ? '?' + params.toString() : '');
+
   fetch(url)
     .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(d => {
       spinner.classList.add('d-none');
       // Stat-Cards
-      kwh.textContent = d.total_kwh.toFixed(3) + ' kWh';
-      cnt.textContent = d.total_count;
-      if (lbl1 && lbl2) {
-        const period = ym ? monthLabel(ym) : 'letzte 12 Monate';
-        lbl1.textContent = 'Verbrauch ' + period;
-        lbl2.textContent = 'Ladevorgänge ' + period;
-      }
-      // Chart-Titel + Diagramm
+      document.getElementById('statKwh').textContent  = d.total_kwh.toFixed(3) + ' kWh';
+      document.getElementById('statCount').textContent = d.total_count;
+      const period = ym ? monthLabel(ym) : 'letzte 12 Monate';
+      document.getElementById('statLabel1').textContent = 'Verbrauch ' + period;
+      document.getElementById('statLabel2').textContent = 'Ladevorgänge ' + period;
+      // Chart-Titel
       {% if role == 'buchhaltung' %}
       const nfLabel = getNoteFilter() ? ` [${getNoteFilter()}]` : '';
       titleEl.textContent = ym
@@ -298,10 +280,8 @@ function loadStats(ym) {
 {% if role == 'buchhaltung' %}
 let _nfTimer = null;
 function onNoteFilterChange(val) {
-  // Verstecktes Formularfeld synchron halten
   const hidden = document.getElementById('historyNoteFilter');
   if (hidden) hidden.value = val;
-  // Debounce: 400ms nach letzter Eingabe Chart neu laden
   clearTimeout(_nfTimer);
   _nfTimer = setTimeout(() => {
     const ym = document.getElementById('monthSelect').value;
@@ -315,12 +295,13 @@ function onMonthChange(ym) {
   {% if role in ('userplus', 'buchhaltung') %}
   const sec = document.getElementById('daySection');
   const sel = document.getElementById('daySelect');
-  if (!ym) { sec.style.display = 'none'; }
-  else {
+  if (!ym) {
+    sec.style.display = 'none';
+  } else {
     sec.style.display = '';
     const [y, mo] = ym.split('-').map(Number);
     const days = new Date(y, mo, 0).getDate();
-    sel.innerHTML = '<option value="">Ganzen Monat anzeigen</option>';
+    sel.innerHTML = '<option value="">Ganzen Monat</option>';
     for (let d = 1; d <= days; d++) {
       const dd = String(d).padStart(2,'0');
       const mm = String(mo).padStart(2,'0');
@@ -329,48 +310,32 @@ function onMonthChange(ym) {
   }
   {% endif %}
   {% if role == 'buchhaltung' %}
-  // Export-Button: nur für abgeschlossene Monate
   const todayYm = new Date().toISOString().slice(0,7);
   const exportBtn = document.getElementById('exportBtn');
   if (exportBtn) {
     exportBtn.disabled = (!ym || ym === todayYm);
     exportBtn.title = (!ym || ym === todayYm) ? 'Kein Export für den laufenden Monat' : '';
   }
-  document.getElementById('exportMonth').value = ym;
+  if (document.getElementById('exportMonth'))
+    document.getElementById('exportMonth').value = ym;
   {% endif %}
-  // Chart & Stat-Cards für ausgewählten Monat neu laden
-  if (ym) loadStats(ym);
-  else     loadStats('');
+  loadStats(ym || '');
 }
 
+// ─── Export ─────────────────────────────────────────────────
 {% if role == 'buchhaltung' %}
 document.getElementById('exportBtn').addEventListener('click', function() {
   const ym = document.getElementById('monthSelect').value;
   const todayYm = new Date().toISOString().slice(0,7);
   if (!ym || ym === todayYm) return;
   document.getElementById('exportMonth').value = ym;
-  // Note-Filter übernehmen
   const nf = getNoteFilter();
   document.getElementById('exportNoteFilter').value = nf;
-  const chips = document.getElementById('chipSelect');
-  const container = document.getElementById('exportChips');
-  container.innerHTML = '';
-  if (chips) {
-    Array.from(chips.selectedOptions).forEach(opt => {
-      const inp = document.createElement('input');
-      inp.type = 'hidden'; inp.name = 'chips'; inp.value = opt.value;
-      container.appendChild(inp);
-    });
-  }
   document.getElementById('exportForm').submit();
 });
-// Export-Button initial deaktivieren (kein Monat ausgewählt)
-document.getElementById('exportBtn').disabled = true;
 {% endif %}
 
-// Initiales Laden – nach vollständigem Seitenaufbau inkl. Chart.js
-window.addEventListener('load', function() {
-  loadStats('');
-});
+// ─── Initial laden ───────────────────────────────────────────
+window.addEventListener('load', function() { loadStats(''); });
 </script>
 {% endblock %}
