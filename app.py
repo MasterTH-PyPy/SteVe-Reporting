@@ -344,17 +344,34 @@ def fetch_daily_stats_for_chips(chips: list, ym: str) -> dict:
     return result
 
 
-def fetch_daily_stats_by_note(ym: str) -> dict:
+def filter_chips_by_note(all_chips_info: list, note_filter: str) -> list:
     """
-    Buchhaltung: kWh pro Tag und Note für einen Monat.
-    Rückgabe: {'notes': [...], 'days': ['YYYY-MM-DD',...],
-               'datasets': [{'note':..., 'data':[kwh,...]}, ...]}
+    Filtert Chip-Liste nach Substring im Note-Feld (case-insensitive).
+    note_filter leer → alle zurückgeben.
     """
-    all_chips_info = fetch_all_chips()
-    note_to_chips  = {}
-    for c in all_chips_info:
+    if not note_filter:
+        return all_chips_info
+    f = note_filter.lower()
+    return [c for c in all_chips_info if f in (c["note"] or c["id_tag"]).lower()]
+
+
+def build_note_to_chips(chips_info: list) -> dict:
+    """Gruppiert Chip-Liste nach Note → {note: [id_tag, ...]}."""
+    note_to_chips = {}
+    for c in chips_info:
         note = c["note"] or c["id_tag"]
         note_to_chips.setdefault(note, []).append(c["id_tag"])
+    return note_to_chips
+
+
+def fetch_daily_stats_by_note(ym: str, note_filter: str = "") -> dict:
+    """
+    Buchhaltung: kWh pro Tag und Note für einen Monat.
+    note_filter: optionaler Substring-Filter auf das Note-Feld.
+    Rückgabe: {'labels': [...], 'datasets': [{'note':..., 'data':[kwh,...]}, ...]}
+    """
+    chips_info    = filter_chips_by_note(fetch_all_chips(), note_filter)
+    note_to_chips = build_note_to_chips(chips_info)
 
     days = get_days_in_month(ym)
     datasets = []
@@ -370,19 +387,14 @@ def fetch_daily_stats_by_note(ym: str) -> dict:
     }
 
 
-def fetch_monthly_stats_by_note(months: list) -> dict:
+def fetch_monthly_stats_by_note(months: list, note_filter: str = "") -> dict:
     """
     Buchhaltung: kWh pro Monat aufgeteilt nach Chip-Note.
-    Rückgabe: {'labels': [...Monate...], 'notes': ['Note A', 'Note B', ...],
-               'datasets': [{'note': '...', 'data': [kwh, kwh, ...]}, ...]}
+    note_filter: optionaler Substring-Filter auf das Note-Feld.
+    Rückgabe: {'labels': [...Monate...], 'datasets': [{'note': '...', 'data': [kwh,...]}, ...]}
     """
-    # Alle Chips mit Note laden
-    all_chips_info = fetch_all_chips()
-    # Note → [chip_ids]
-    note_to_chips = {}
-    for c in all_chips_info:
-        note = c["note"] or c["id_tag"]
-        note_to_chips.setdefault(note, []).append(c["id_tag"])
+    chips_info    = filter_chips_by_note(fetch_all_chips(), note_filter)
+    note_to_chips = build_note_to_chips(chips_info)
 
     labels = [m["label"] for m in months]
     datasets = []
@@ -607,23 +619,26 @@ def dashboard():
 @role_required("user", "userplus", "buchhaltung")
 def api_stats():
     """JSON-Endpunkt für Chart.js-Daten."""
-    role = session["role"]
-    ym   = request.args.get("month", "")   # leer = Übersicht 12 Monate
+    role        = session["role"]
+    ym          = request.args.get("month", "")        # leer = Übersicht 12 Monate
+    note_filter = request.args.get("note_filter", "").strip()
 
     if role == "buchhaltung":
-        all_chips = [c["id_tag"] for c in fetch_all_chips()]
+        # Für Totals nur die gefilterten Chips verwenden
+        filtered_chips_info = filter_chips_by_note(fetch_all_chips(), note_filter)
+        filtered_chips = [c["id_tag"] for c in filtered_chips_info]
         if ym:
             # Tagesauflösung: gestapelter Balken pro Tag, aufgeteilt nach Note
-            data = fetch_daily_stats_by_note(ym)
-            day_stats = fetch_daily_stats_for_chips(all_chips, ym)
+            data = fetch_daily_stats_by_note(ym, note_filter)
+            day_stats = fetch_daily_stats_for_chips(filtered_chips, ym)
             days = get_days_in_month(ym)
             total_kwh = round(sum(day_stats.get(d["value"], 0.0) for d in days), 3)
             total_cnt = sum(day_stats.get(d["value"] + "_count", 0) for d in days)
         else:
             # Monatsauflösung: gestapelter Balken pro Monat
             months = list(reversed(get_months(12, include_current=True)))
-            data = fetch_monthly_stats_by_note(months)
-            summary = fetch_monthly_stats_for_chips(all_chips, months)
+            data = fetch_monthly_stats_by_note(months, note_filter)
+            summary = fetch_monthly_stats_for_chips(filtered_chips, months)
             total_kwh = round(sum(s["kwh"] for s in summary), 3)
             total_cnt = sum(s["count"] for s in summary)
         return jsonify({
@@ -632,6 +647,7 @@ def api_stats():
             "datasets": data["datasets"],
             "total_kwh": total_kwh,
             "total_count": total_cnt,
+            "note_filter": note_filter,
         })
     else:
         # user / userplus: einfacher Balken kWh pro Monat oder pro Tag
@@ -670,10 +686,11 @@ def api_stats():
 @app.route("/history")
 @role_required("user", "userplus", "buchhaltung")
 def history():
-    role = session["role"]
-    ym   = request.args.get("month", "")
-    day  = request.args.get("day", "")
+    role        = session["role"]
+    ym          = request.args.get("month", "")
+    day         = request.args.get("day", "")
     chip_filter = request.args.getlist("chips")
+    note_filter = request.args.get("note_filter", "Mitarbeiter").strip()
 
     if not ym:
         flash("Bitte einen Monat auswählen.", "warning")
@@ -689,8 +706,13 @@ def history():
 
     # Chips ermitteln
     if role == "buchhaltung":
-        all_chips = [c["id_tag"] for c in fetch_all_chips()]
-        chips = chip_filter if chip_filter else all_chips
+        all_chips_info_full = fetch_all_chips()
+        # Note-Filter anwenden (Chip-Auswahl hat Vorrang vor Note-Filter)
+        if chip_filter:
+            chips = chip_filter
+        else:
+            filtered = filter_chips_by_note(all_chips_info_full, note_filter)
+            chips = [c["id_tag"] for c in filtered]
     else:
         db = get_db()
         user = db.execute("SELECT * FROM web_users WHERE id=?", (session["user_id"],)).fetchone()
@@ -713,7 +735,7 @@ def history():
     all_chips_info = fetch_all_chips() if role == "buchhaltung" else []
 
     # Kein Export für den laufenden Monat
-    today_ym   = date.today().strftime("%Y-%m")
+    today_ym     = date.today().strftime("%Y-%m")
     allow_export = (role == "buchhaltung") and (ym != today_ym)
 
     return render_template("history.html",
@@ -726,6 +748,7 @@ def history():
                            days_list=days_list,
                            all_chips_info=all_chips_info,
                            selected_chips=chip_filter,
+                           note_filter=note_filter,
                            allow_export=allow_export,
                            username=session["username"])
 
@@ -733,16 +756,20 @@ def history():
 @app.route("/export")
 @role_required("buchhaltung")
 def export():
-    ym = request.args.get("month", "")
+    ym          = request.args.get("month", "")
     chip_filter = request.args.getlist("chips")
+    note_filter = request.args.get("note_filter", "").strip()
     if not ym:
         flash("Bitte einen Monat auswählen.", "warning")
         return redirect(url_for("dashboard"))
 
     date_from, date_to = month_range(ym)
     label = datetime.strptime(ym, "%Y-%m").strftime("%B %Y")
-    all_chips = [c["id_tag"] for c in fetch_all_chips()]
-    chips = chip_filter if chip_filter else all_chips
+    if chip_filter:
+        chips = chip_filter
+    else:
+        filtered = filter_chips_by_note(fetch_all_chips(), note_filter)
+        chips = [c["id_tag"] for c in filtered]
     transactions = fetch_transactions(chips, date_from, date_to)
     xlsx_bytes = build_excel(transactions, label)
 

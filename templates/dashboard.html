@@ -63,6 +63,32 @@
   </div>
   <div class="card-body p-4">
     <form method="get" action="{{ url_for('history') }}" id="historyForm">
+      {# Note-Filter als verstecktes Feld wird per JS befüllt #}
+      {% if role == 'buchhaltung' %}
+      <input type="hidden" name="note_filter" id="historyNoteFilter" value="Mitarbeiter"/>
+      {% endif %}
+
+      {% if role == 'buchhaltung' %}
+      <div class="mb-3">
+        <label class="form-label fw-semibold">
+          <i class="bi bi-funnel me-1 text-primary"></i>Kommentar-Filter
+          <span class="text-muted fw-normal small">(Kennzeichen, Name, Bezug …)</span>
+        </label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-search"></i></span>
+          <input type="text" class="form-control" id="noteFilterInput" name="note_filter"
+                 placeholder="z.B. Mitarbeiter, WI-AB 123 …"
+                 value="Mitarbeiter"
+                 oninput="onNoteFilterChange(this.value)">
+          <button class="btn btn-outline-secondary" type="button"
+                  onclick="document.getElementById('noteFilterInput').value='';onNoteFilterChange('')"
+                  title="Filter zurücksetzen">
+            <i class="bi bi-x-lg"></i>
+          </button>
+        </div>
+        <div class="form-text">Filtert Chips und Grafik nach Kommentar-Inhalt (Teiltext genügt).</div>
+      </div>
+      {% endif %}
 
       <div class="mb-3">
         <label class="form-label fw-semibold">
@@ -122,6 +148,7 @@
     {% if role == 'buchhaltung' %}
     <form id="exportForm" method="get" action="{{ url_for('export') }}" style="display:none">
       <input type="hidden" name="month" id="exportMonth"/>
+      <input type="hidden" name="note_filter" id="exportNoteFilter" value="Mitarbeiter"/>
       <div id="exportChips"></div>
     </form>
     {% endif %}
@@ -214,6 +241,11 @@ function monthLabel(ym) {
   return new Date(y, m - 1).toLocaleDateString('de-DE', {month: 'long', year: 'numeric'});
 }
 
+function getNoteFilter() {
+  const el = document.getElementById('noteFilterInput');
+  return el ? el.value.trim() : '';
+}
+
 function loadStats(ym) {
   const spinner  = document.getElementById('chartSpinner');
   const kwh      = document.getElementById('statKwh');
@@ -223,7 +255,13 @@ function loadStats(ym) {
   const titleEl  = document.getElementById('chartTitle');
   spinner.classList.remove('d-none');
 
-  const url = '/api/stats' + (ym ? '?month=' + ym : '');
+  const params = new URLSearchParams();
+  if (ym) params.set('month', ym);
+  {% if role == 'buchhaltung' %}
+  const nf = getNoteFilter();
+  if (nf) params.set('note_filter', nf);
+  {% endif %}
+  const url = '/api/stats' + (params.toString() ? '?' + params.toString() : '');
   fetch(url)
     .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(d => {
@@ -238,9 +276,10 @@ function loadStats(ym) {
       }
       // Chart-Titel + Diagramm
       {% if role == 'buchhaltung' %}
+      const nfLabel = getNoteFilter() ? ` [${getNoteFilter()}]` : '';
       titleEl.textContent = ym
-        ? 'Verbrauch nach Mitarbeiter – ' + monthLabel(ym) + ' (Tage)'
-        : 'Verbrauch nach Mitarbeiter – letzte 12 Monate';
+        ? 'Verbrauch' + nfLabel + ' – ' + monthLabel(ym) + ' (Tage)'
+        : 'Verbrauch' + nfLabel + ' – letzte 12 Monate';
       initChart('stacked', d.labels, d.datasets);
       {% else %}
       titleEl.textContent = ym
@@ -254,6 +293,22 @@ function loadStats(ym) {
       console.error('Stats-Fehler:', err);
     });
 }
+
+// ─── Kommentar-Filter (Buchhaltung) ─────────────────────────
+{% if role == 'buchhaltung' %}
+let _nfTimer = null;
+function onNoteFilterChange(val) {
+  // Verstecktes Formularfeld synchron halten
+  const hidden = document.getElementById('historyNoteFilter');
+  if (hidden) hidden.value = val;
+  // Debounce: 400ms nach letzter Eingabe Chart neu laden
+  clearTimeout(_nfTimer);
+  _nfTimer = setTimeout(() => {
+    const ym = document.getElementById('monthSelect').value;
+    loadStats(ym);
+  }, 400);
+}
+{% endif %}
 
 // ─── Monat-Auswahl ──────────────────────────────────────────
 function onMonthChange(ym) {
@@ -294,6 +349,9 @@ document.getElementById('exportBtn').addEventListener('click', function() {
   const todayYm = new Date().toISOString().slice(0,7);
   if (!ym || ym === todayYm) return;
   document.getElementById('exportMonth').value = ym;
+  // Note-Filter übernehmen
+  const nf = getNoteFilter();
+  document.getElementById('exportNoteFilter').value = nf;
   const chips = document.getElementById('chipSelect');
   const container = document.getElementById('exportChips');
   container.innerHTML = '';
