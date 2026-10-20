@@ -695,7 +695,7 @@ def history():
     note_filter = request.args.get("note_filter", "Mitarbeiter").strip()
 
     if not ym:
-        flash("Bitte einen Monat auswählen.", "warning")
+        flash("Bitte wähle einen Monat aus.", "warning")
         return redirect(url_for("dashboard"))
 
     # Zeitraum
@@ -762,7 +762,7 @@ def export():
     chip_filter = request.args.getlist("chips")
     note_filter = request.args.get("note_filter", "").strip()
     if not ym:
-        flash("Bitte einen Monat auswählen.", "warning")
+        flash("Bitte wähle einen Monat aus.", "warning")
         return redirect(url_for("dashboard"))
 
     date_from, date_to = month_range(ym)
