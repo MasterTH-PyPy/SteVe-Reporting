@@ -727,6 +727,8 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
         # Merge: A bis Spalte vor dauer_min; dauer_min + energie_kwh bleiben eigene Zellen
         ws.merge_cells(f"A{total_row}:{get_column_letter(merge_end)}{total_row}")
 
+    wb.calculation.calcMode = "auto"
+    wb.calculation.fullCalcOnLoad = True
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
