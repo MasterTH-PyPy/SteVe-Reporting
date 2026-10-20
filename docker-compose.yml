@@ -1,14 +1,7 @@
-version: "3.8"
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SteVe Ladehistorie – Web-Frontend
 #
-# Dieses Compose-File wird als ERGÄNZUNG zum bestehenden SteVe-Compose genutzt.
-# Der Container muss im selben Docker-Netzwerk wie die SteVe-DB laufen UND
-# Zugriff auf den Docker-Socket haben, damit docker exec funktioniert.
-#
-# Voraussetzung: Das SteVe-Compose-Netzwerk heißt "steve_default" (Standard).
-# Falls es anders heißt: docker network ls prüfen und unten anpassen.
+# Netzwerkname ermitteln: docker network ls | grep steve
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -33,11 +26,11 @@ services:
       # Persistente SQLite-Datenbank (interne User)
       - reporting-data:/app/users.db
     networks:
-      - steve_default
+      - steve-steve-3120_default
 
 volumes:
   reporting-data:
 
 networks:
-  steve_default:
+  steve-steve-3120_default:
     external: true
