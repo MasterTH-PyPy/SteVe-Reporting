@@ -136,6 +136,20 @@ def de_num(value, decimals: int = 3) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+@app.template_filter("local_dt")
+def local_dt(value) -> str:
+    """UTC-String aus der SQLite → '21.10.2026 14:50' in Europe/Berlin"""
+    if not value:
+        return "–"
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import timezone
+        dt = datetime.strptime(str(value)[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+        return dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Europe/Berlin")).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return str(value)
+
+
 @app.template_filter("de_dt")
 def de_dt(value) -> str:
     """'2026-09-01 07:12:33' → '01.09.2026 07:12'"""
@@ -183,6 +197,15 @@ def init_db():
             created_at          TEXT    DEFAULT NULL,
             password_changed_at TEXT    DEFAULT NULL,
             last_login          TEXT    DEFAULT NULL
+        );
+        CREATE TABLE IF NOT EXISTS web_sessions (
+            sid         TEXT PRIMARY KEY,
+            user_id     INTEGER NOT NULL,
+            username    TEXT    NOT NULL,
+            ip          TEXT,
+            user_agent  TEXT,
+            created_at  TEXT    NOT NULL,
+            last_seen   TEXT    NOT NULL
         );
     """)
     # Migration: Spalten nachrüsten falls sie noch fehlen
@@ -413,8 +436,21 @@ def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
     for r in rows:
         if len(r) < len(cols):
             continue
-        result.append(dict(zip(cols, r)))
+        tx = dict(zip(cols, r))
+        tx["leistung_kw"] = avg_power_kw(tx.get("energie_kwh"), tx.get("dauer_min"))
+        result.append(tx)
     return result
+
+
+def avg_power_kw(kwh, minutes):
+    """Durchschnittliche Ladeleistung = Energie / Dauer (None, wenn nicht berechenbar)."""
+    try:
+        kwh, minutes = float(kwh), float(minutes)
+    except (TypeError, ValueError):
+        return None
+    if minutes <= 0 or kwh < 0:
+        return None
+    return round(kwh / (minutes / 60.0), 2)
 
 # ─────────────────────────────────────────────
 # Statistik-Abfragen
@@ -610,6 +646,7 @@ _XL_COLUMNS = [
     ("zaehler_start", "Zähler Start (Wh)", 18, _XL_RIGHT),
     ("zaehler_ende",  "Zähler Ende (Wh)",  18, _XL_RIGHT),
     ("energie_kwh",   "Energie (kWh)",      15, _XL_RIGHT),
+    ("leistung_kw",   "Ø Leistung (kW)",   15, _XL_RIGHT),
     ("stopgrund",     "Stopgrund",          18, _XL_LEFT),
 ]
 
@@ -840,7 +877,7 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
                 if key in ("anschluss", "zaehler_start", "zaehler_ende"):
                     try: val = int(val)
                     except: pass
-                elif key in ("dauer_min", "energie_kwh"):
+                elif key in ("dauer_min", "energie_kwh", "leistung_kw"):
                     try: val = float(val)
                     except: pass
                 c = ws.cell(row=row_idx, column=col_idx, value=val)
@@ -850,6 +887,8 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
                     c.number_format = "0.000"
                 elif key == "dauer_min" and val is not None:
                     c.number_format = "0.0"
+                elif key == "leistung_kw" and val is not None:
+                    c.number_format = "0.00"
 
         total_row = len(rows) + 4
         ws.row_dimensions[total_row].height = 20
@@ -890,6 +929,71 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
 # ─────────────────────────────────────────────
 # Auth-Hilfsfunktionen
 # ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# Session-Tracking (serverseitig, für Admin-Übersicht + Abmelden erzwingen)
+# ─────────────────────────────────────────────
+
+SESSION_ONLINE_MIN  = 5     # gilt als "online", wenn letzte Aktivität jünger ist
+SESSION_KEEP_DAYS   = 31    # = Flask PERMANENT_SESSION_LIFETIME (Default)
+
+def _utc(dt=None, **delta) -> str:
+    from datetime import timedelta
+    return ((dt or datetime.utcnow()) - timedelta(**delta)).strftime("%Y-%m-%d %H:%M:%S")
+
+def create_session_row(db) -> None:
+    sid = secrets.token_urlsafe(24)
+    session["sid"] = sid
+    now = _utc()
+    db.execute("INSERT INTO web_sessions (sid, user_id, username, ip, user_agent, created_at, last_seen) "
+               "VALUES (?,?,?,?,?,?,?)",
+               (sid, session["user_id"], session["username"], request.remote_addr,
+                (request.headers.get("User-Agent") or "")[:300], now, now))
+    db.execute("DELETE FROM web_sessions WHERE last_seen < ?", (_utc(days=SESSION_KEEP_DAYS),))
+    db.commit()
+
+def end_sessions_of_user(db, user_id: int, keep_sid: str = None) -> int:
+    if keep_sid:
+        cur = db.execute("DELETE FROM web_sessions WHERE user_id=? AND sid<>?", (user_id, keep_sid))
+    else:
+        cur = db.execute("DELETE FROM web_sessions WHERE user_id=?", (user_id,))
+    db.commit()
+    return cur.rowcount
+
+@app.before_request
+def track_session():
+    if request.endpoint in (None, "static", "favicon") or "user_id" not in session:
+        return
+    db  = get_db()
+    sid = session.get("sid")
+    if not sid:
+        # Session von vor dem Update → einmalig registrieren statt rauszuwerfen
+        create_session_row(db)
+        return
+    row = db.execute("SELECT last_seen FROM web_sessions WHERE sid=?", (sid,)).fetchone()
+    if not row:
+        # Vom Admin beendet (oder abgelaufen)
+        log.info("SESSION_ENDED | user=%s | ip=%s", session.get("username"), request.remote_addr)
+        session.clear()
+        if request.path.startswith("/api/"):
+            abort(401)
+        flash("Deine Sitzung wurde beendet. Bitte melde dich erneut an.", "warning")
+        return redirect(url_for("login"))
+    if row["last_seen"] < _utc(seconds=60):     # max. 1 Schreibzugriff pro Minute
+        db.execute("UPDATE web_sessions SET last_seen=?, ip=? WHERE sid=?",
+                   (_utc(), request.remote_addr, sid))
+        db.commit()
+
+
+def short_ua(ua: str) -> str:
+    """User-Agent → 'Chrome · Windows'"""
+    ua = ua or ""
+    browser = next((n for k, n in [("Edg/", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"),
+                                   ("Chrome/", "Chrome"), ("Safari/", "Safari")] if k in ua), "Unbekannt")
+    os_ = next((n for k, n in [("Windows", "Windows"), ("Android", "Android"), ("iPhone", "iPhone"),
+                               ("iPad", "iPad"), ("Mac OS", "macOS"), ("Linux", "Linux")] if k in ua), "")
+    return f"{browser} · {os_}" if os_ else browser
+
 
 def login_required(f):
     @wraps(f)
@@ -1000,6 +1104,7 @@ def login():
             session["username"] = user["username"]
             session["role"] = user["role"]
             session.permanent = True
+            create_session_row(db)
             # Last-Login timestamp aktualisieren
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             db.execute("UPDATE web_users SET last_login=? WHERE id=?", (now, user["id"]))
@@ -1019,6 +1124,11 @@ def login():
 
 @app.route("/logout")
 def logout():
+    if session.get("sid"):
+        db = get_db()
+        db.execute("DELETE FROM web_sessions WHERE sid=?", (session["sid"],))
+        db.commit()
+        audit("LOGOUT")
     session.clear()
     return redirect(url_for("login"))
 
@@ -1049,7 +1159,8 @@ def change_password():
             )
             db.commit()
             session.pop("must_change_password", None)
-            audit("PASSWORD_CHANGE")
+            n = end_sessions_of_user(db, session["user_id"], keep_sid=session.get("sid"))
+            audit("PASSWORD_CHANGE", f"andere_sessions_beendet={n}")
             flash("Passwort erfolgreich geändert.", "success")
             role = session.get("role")
             if role == "admin":
@@ -1210,6 +1321,13 @@ def history():
         except (ValueError, TypeError):
             pass
 
+    total_min = 0.0
+    for tx in transactions:
+        try:
+            total_min += float(tx.get("dauer_min") or 0)
+        except (ValueError, TypeError):
+            pass
+    avg_kw = avg_power_kw(total_energy, total_min)
     all_chips_info = fetch_all_chips() if role == "buchhaltung" else []
 
     # Kein Export für den laufenden Monat
@@ -1220,6 +1338,7 @@ def history():
                            transactions=transactions,
                            period_label=period_label,
                            total_energy=round(total_energy, 3),
+                           avg_kw=avg_kw,
                            role=role,
                            ym=ym,
                            all_chips_info=all_chips_info,
@@ -1274,7 +1393,52 @@ def export():
 def admin_users():
     db = get_db()
     users = db.execute("SELECT * FROM web_users ORDER BY username").fetchall()
-    return render_template("admin_users.html", users=users, username=session["username"])
+    return render_template("admin_users.html", users=users,
+                           online_min=SESSION_ONLINE_MIN,
+                           username=session["username"])
+
+
+def sessions_overview() -> list:
+    db = get_db()
+    online_since = _utc(minutes=SESSION_ONLINE_MIN)
+    out = []
+    for s in db.execute("SELECT s.*, u.role FROM web_sessions s "
+                        "LEFT JOIN web_users u ON u.id = s.user_id "
+                        "WHERE s.last_seen >= ? ORDER BY s.last_seen DESC",
+                        (_utc(days=SESSION_KEEP_DAYS),)):
+        out.append({
+            "sid":        s["sid"],
+            "username":   s["username"],
+            "role":       s["role"] or "?",
+            "ip":         s["ip"] or "",
+            "client":     short_ua(s["user_agent"]),
+            "created_at": local_dt(s["created_at"]),
+            "last_seen":  local_dt(s["last_seen"]),
+            "online":     s["last_seen"] >= online_since,
+            "current":    s["sid"] == session.get("sid"),
+        })
+    return out
+
+
+@app.route("/admin/api/sessions")
+@role_required("admin")
+def admin_api_sessions():
+    return jsonify(sessions_overview())
+
+
+@app.route("/admin/sessions/<sid>/end", methods=["POST"])
+@role_required("admin")
+def admin_session_end(sid):
+    if sid == session.get("sid"):
+        flash("Die eigene Sitzung beendest du über „Abmelden“.", "warning")
+        return redirect(url_for("admin_users"))
+    db  = get_db()
+    row = db.execute("SELECT username FROM web_sessions WHERE sid=?", (sid,)).fetchone()
+    db.execute("DELETE FROM web_sessions WHERE sid=?", (sid,))
+    db.commit()
+    audit("SESSION_END", f"target_name={row['username'] if row else '?'}")
+    flash(f"Sitzung von {row['username'] if row else '?'} beendet.", "success")
+    return redirect(url_for("admin_users"))
 
 
 @app.route("/admin/users/new", methods=["GET", "POST"])
@@ -1402,6 +1566,7 @@ def admin_user_delete(uid):
     target = db.execute("SELECT username FROM web_users WHERE id=?", (uid,)).fetchone()
     db.execute("DELETE FROM web_users WHERE id=?", (uid,))
     db.commit()
+    end_sessions_of_user(db, uid)
     audit("USER_DELETE", f"target_uid={uid} target_name={target['username'] if target else '?'}")
     flash("Benutzer gelöscht.", "success")
     return redirect(url_for("admin_users"))
@@ -1418,6 +1583,7 @@ def admin_user_reset_pw(uid):
     target = db.execute("SELECT username FROM web_users WHERE id=?", (uid,)).fetchone()
     db.execute("UPDATE web_users SET password=? WHERE id=?", (hash_password(new_pw), uid))
     db.commit()
+    end_sessions_of_user(db, uid)
     audit("PASSWORD_RESET", f"target_uid={uid} target_name={target['username'] if target else '?'}")
     flash("Passwort wurde zurückgesetzt.", "success")
     return redirect(url_for("admin_users"))
