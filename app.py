@@ -4,7 +4,7 @@ SteVe Ladehistorie – Web-Frontend
 Berechtigungsstufen:
   admin        – Userverwaltung + Dashboard/Historie/Export wie Buchhaltung
   buchhaltung  – Alle Chips, alle Zeiträume, Excel-Export
-  userplus     – Eigene Chips, Monatsansicht + Tagesansicht, kein Export
+  userplus     – Eigene Chips, Monatsansicht, kein Export (derzeit wie user)
   user         – Eigene Chips, nur Monatsansicht, kein Export
 """
 
@@ -902,6 +902,14 @@ def view_role() -> str:
 # Zeitraum-Hilfsfunktionen
 # ─────────────────────────────────────────────
 
+_MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+           "August", "September", "Oktober", "November", "Dezember"]
+
+def monat_label(d) -> str:
+    """Deutscher Monatsname + Jahr, unabhängig von der System-Locale."""
+    return f"{_MONATE[d.month - 1]} {d.year}"
+
+
 def get_months(n=12, include_current=True) -> list:
     """Gibt n Monate zurück, optional mit dem laufenden Monat voran."""
     months = []
@@ -909,7 +917,7 @@ def get_months(n=12, include_current=True) -> list:
     start = 0 if include_current else 1
     for i in range(start, n + start):
         d = today - relativedelta(months=i)
-        label = d.strftime("%B %Y")
+        label = monat_label(d)
         months.append({
             "value": d.strftime("%Y-%m"),
             "label": label,
@@ -928,10 +936,6 @@ def month_range(ym: str) -> tuple:
     first = date(y, m, 1)
     last  = first + relativedelta(months=1) - relativedelta(days=1)
     return first.strftime("%Y-%m-%d 00:00:00"), last.strftime("%Y-%m-%d 23:59:59")
-
-
-def day_range(ymd: str) -> tuple:
-    return f"{ymd} 00:00:00", f"{ymd} 23:59:59"
 
 
 def get_days_in_month(ym: str) -> list:
@@ -1146,7 +1150,6 @@ def api_stats():
 def history():
     role        = view_role()
     ym          = request.args.get("month", "")
-    day         = request.args.get("day", "")
     chip_filter = request.args.getlist("chips")
     note_filter = request.args.get("note_filter", "Mitarbeiter").strip()
 
@@ -1155,12 +1158,8 @@ def history():
         return redirect(url_for("dashboard"))
 
     # Zeitraum
-    if day and role in ("userplus", "buchhaltung"):
-        date_from, date_to = day_range(day)
-        period_label = datetime.strptime(day, "%Y-%m-%d").strftime("%d.%m.%Y")
-    else:
-        date_from, date_to = month_range(ym)
-        period_label = datetime.strptime(ym, "%Y-%m").strftime("%B %Y")
+    date_from, date_to = month_range(ym)
+    period_label = monat_label(datetime.strptime(ym, "%Y-%m"))
 
     # Chips ermitteln
     if role == "buchhaltung":
@@ -1189,7 +1188,6 @@ def history():
         except (ValueError, TypeError):
             pass
 
-    days_list = get_days_in_month(ym) if role in ("userplus", "buchhaltung") else []
     all_chips_info = fetch_all_chips() if role == "buchhaltung" else []
 
     # Kein Export für den laufenden Monat
@@ -1202,8 +1200,6 @@ def history():
                            total_energy=round(total_energy, 3),
                            role=role,
                            ym=ym,
-                           day=day,
-                           days_list=days_list,
                            all_chips_info=all_chips_info,
                            selected_chips=chip_filter,
                            note_filter=note_filter,
@@ -1222,7 +1218,7 @@ def export():
         return redirect(url_for("dashboard"))
 
     date_from, date_to = month_range(ym)
-    label = datetime.strptime(ym, "%Y-%m").strftime("%B %Y")
+    label = monat_label(datetime.strptime(ym, "%Y-%m"))
 
     # Alle bekannten Chips mit Notes laden (auch ohne Transaktionen im Zeitraum)
     all_chips_info = fetch_all_chips()

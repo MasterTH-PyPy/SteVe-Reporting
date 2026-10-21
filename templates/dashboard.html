@@ -78,7 +78,7 @@
         {% endif %}
 
         {# Monat #}
-        <div class="col-12 {% if role == 'buchhaltung' %}col-md-4{% elif role in ('userplus',) %}col-md-6{% else %}col-md-8{% endif %}">
+        <div class="col-12 {% if role == 'buchhaltung' %}col-md-4{% else %}col-md-8{% endif %}">
           <label class="form-label fw-semibold small mb-1">
             <i class="bi bi-calendar3 me-1 text-primary"></i>Monat
           </label>
@@ -94,19 +94,6 @@
           </select>
           <div class="invalid-feedback">Bitte wähle einen Monat aus.</div>
         </div>
-
-        {# Einzeltag (userplus + buchhaltung) #}
-        {% if role in ('userplus', 'buchhaltung') %}
-        <div class="col-12 col-md-4" id="daySection" style="display:none">
-          <label class="form-label fw-semibold small mb-1">
-            <i class="bi bi-calendar-day me-1 text-primary"></i>Einzeltag
-            <span class="text-muted fw-normal">(optional)</span>
-          </label>
-          <select name="day" class="form-select form-select-sm" id="daySelect">
-            <option value="">Ganzen Monat</option>
-          </select>
-        </div>
-        {% endif %}
 
         {# Buttons – nur für user/userplus in der Steuerleiste #}
         {% if role != 'buchhaltung' %}
@@ -300,23 +287,6 @@ function onNoteFilterChange(val) {
 
 // ─── Monat-Auswahl ──────────────────────────────────────────
 function onMonthChange(ym) {
-  {% if role in ('userplus', 'buchhaltung') %}
-  const sec = document.getElementById('daySection');
-  const sel = document.getElementById('daySelect');
-  if (!ym) {
-    sec.style.display = 'none';
-  } else {
-    sec.style.display = '';
-    const [y, mo] = ym.split('-').map(Number);
-    const days = new Date(y, mo, 0).getDate();
-    sel.innerHTML = '<option value="">Ganzen Monat</option>';
-    for (let d = 1; d <= days; d++) {
-      const dd = String(d).padStart(2,'0');
-      const mm = String(mo).padStart(2,'0');
-      sel.innerHTML += `<option value="${ym}-${dd}">${dd}.${mm}.${y}</option>`;
-    }
-  }
-  {% endif %}
   {% if role == 'buchhaltung' %}
   const todayYm = new Date().toISOString().slice(0,7);
   const exportBtn = document.getElementById('exportBtn');

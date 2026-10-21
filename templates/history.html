@@ -30,45 +30,12 @@
   </div>
 </div>
 
-{# Tagesfilter für userplus + buchhaltung #}
-{% if role in ('userplus', 'buchhaltung') and days_list %}
-<div class="card border-0 shadow-sm mb-4">
-  <div class="card-body py-3">
-    <form method="get" action="{{ url_for('history') }}" class="d-flex align-items-center gap-3 flex-wrap">
-      <input type="hidden" name="month" value="{{ ym }}"/>
-      {% if note_filter is defined %}<input type="hidden" name="note_filter" value="{{ note_filter }}"/>{% endif %}
-      {% for chip in selected_chips %}
-      <input type="hidden" name="chips" value="{{ chip }}"/>
-      {% endfor %}
-      <label class="fw-semibold small mb-0">
-        <i class="bi bi-calendar-day me-1 text-primary"></i>Einzeltag:
-      </label>
-      <select name="day" class="form-select form-select-sm" style="width:auto"
-              onchange="this.form.submit()">
-        <option value="">Ganzen Monat</option>
-        {% for d in days_list %}
-        <option value="{{ d.value }}" {% if d.value == day %}selected{% endif %}>
-          {{ d.label }}
-        </option>
-        {% endfor %}
-      </select>
-      {% if day %}
-      <a href="{{ url_for('history', month=ym, note_filter=note_filter) }}" class="btn btn-outline-secondary btn-sm">
-        <i class="bi bi-x me-1"></i>Zurücksetzen
-      </a>
-      {% endif %}
-    </form>
-  </div>
-</div>
-{% endif %}
-
 {# Chip-Filter (Buchhaltung) #}
 {% if role == 'buchhaltung' and all_chips_info %}
 <div class="card border-0 shadow-sm mb-4">
   <div class="card-body py-3">
     <form method="get" action="{{ url_for('history') }}" class="d-flex align-items-center gap-3 flex-wrap">
       <input type="hidden" name="month" value="{{ ym }}"/>
-      {% if day %}<input type="hidden" name="day" value="{{ day }}"/>{% endif %}
       {% if note_filter is defined %}<input type="hidden" name="note_filter" value="{{ note_filter }}"/>{% endif %}
       <label class="fw-semibold small mb-0">
         <i class="bi bi-credit-card me-1 text-primary"></i>Chips:
@@ -86,7 +53,7 @@
         <i class="bi bi-filter me-1"></i>Filtern
       </button>
       {% if selected_chips %}
-      <a href="{{ url_for('history', month=ym, day=day, note_filter=note_filter) }}" class="btn btn-outline-secondary btn-sm">
+      <a href="{{ url_for('history', month=ym, note_filter=note_filter) }}" class="btn btn-outline-secondary btn-sm">
         <i class="bi bi-x me-1"></i>Alle
       </a>
       {% endif %}
