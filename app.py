@@ -82,7 +82,7 @@ if not _sk or _sk.startswith("bitte-"):
                 "(Sessions gehen bei jedem Neustart verloren). Bitte in .env setzen!")
     _sk = secrets.token_hex(32)
 app.secret_key = _sk
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # echte Client-IP vom Proxy
 app.config["SESSION_COOKIE_SECURE"]   = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -93,6 +93,8 @@ limiter = Limiter(get_remote_address, app=app, default_limits=[])
 
 @app.after_request
 def log_access(response):
+    if request.path.startswith("/static/") or request.path == "/favicon.ico":
+        return response
     user = session.get("username", "-") if session else "-"
     log.info(
         '%s %s %s | %d | user=%s',
