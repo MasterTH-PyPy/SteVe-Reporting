@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -211,6 +211,30 @@ def run_mysql(sql: str) -> list:
     return rows
 
 
+_EVSE_SCHEMA = None
+
+def has_evse_schema() -> bool:
+    """
+    SteVe >= 3.13 hat die Tabelle `connector` in `evse` umbenannt
+    (connector_pk -> evse_pk, connector_id -> evse_id).
+    Wird einmal erkannt und gecacht; bei leerem Ergebnis (DB nicht erreichbar)
+    wird nicht gecacht, damit der nächste Aufruf erneut prüft.
+    """
+    global _EVSE_SCHEMA
+    if _EVSE_SCHEMA is not None:
+        return _EVSE_SCHEMA
+    rows = run_mysql(
+        "SELECT COUNT(*) FROM information_schema.columns "
+        "WHERE table_schema = DATABASE() AND table_name = 'transaction_start' "
+        "AND column_name = 'evse_pk';"
+    )
+    if not rows:
+        return True  # Default: aktuelles Schema
+    _EVSE_SCHEMA = rows[0][0] == "1"
+    log.info("SteVe-Schema erkannt: %s", "evse (3.13+)" if _EVSE_SCHEMA else "connector (3.7–3.12)")
+    return _EVSE_SCHEMA
+
+
 def fetch_chip_notes() -> list:
     """Alle eindeutigen, nicht-leeren Notes aus ocpp_tag (HEX-kodiert)."""
     sql = "SELECT DISTINCT HEX(note) AS note_hex FROM ocpp_tag WHERE note IS NOT NULL AND note != '' ORDER BY note;"
@@ -286,13 +310,20 @@ def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
     date_from = _validate_date(date_from)
     date_to   = _validate_date(date_to)
     if STEVE_VERSION == "current":
+        # SteVe 3.13+: connector -> evse
+        if has_evse_schema():
+            conn_join = "LEFT JOIN evse c               ON ts.evse_pk        = c.evse_pk"
+            conn_col  = "c.evse_id"
+        else:
+            conn_join = "LEFT JOIN connector c          ON ts.connector_pk   = c.connector_pk"
+            conn_col  = "c.connector_id"
         sql = f"""
             SELECT
                 ts.transaction_pk                                   AS id,
                 ts.id_tag                                           AS chip,
                 COALESCE(wu.username,'')                            AS benutzer,
                 c.charge_box_id                                     AS station,
-                c.connector_id                                      AS anschluss,
+                {conn_col}                                          AS anschluss,
                 ts.start_timestamp                                  AS start_time,
                 te.stop_timestamp                                   AS stop_time,
                 ROUND(TIMESTAMPDIFF(SECOND,ts.start_timestamp,te.stop_timestamp)/60.0,1) AS dauer_min,
@@ -302,7 +333,7 @@ def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
                 te.stop_reason                                      AS stopgrund
             FROM transaction_start ts
             LEFT JOIN transaction_stop te  ON ts.transaction_pk = te.transaction_pk
-            LEFT JOIN connector c          ON ts.connector_pk   = c.connector_pk
+            {conn_join}
             LEFT JOIN ocpp_tag ot          ON ts.id_tag         = ot.id_tag
             LEFT JOIN user_ocpp_tag uot    ON ot.ocpp_tag_pk    = uot.ocpp_tag_pk
             LEFT JOIN web_user wu          ON uot.user_pk       = wu.web_user_pk

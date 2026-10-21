@@ -31,7 +31,7 @@ Umgebungsvariablen in `docker-compose.yml` anpassen:
 | `DB_NAME` | Datenbankname (`steve`) |
 | `DB_USER` | DB-Benutzer |
 | `DB_PASSWORD` | DB-Passwort |
-| `STEVE_VERSION` | `current` (3.7+) oder `legacy` (3.6) |
+| `STEVE_VERSION` | `current` (3.7+, inkl. 3.13+ mit EVSE-Schema – wird automatisch erkannt) oder `legacy` (3.6) |
 | `SECRET_KEY` | Zufälliger langer String für Flask-Sessions |
 
 ## Netzwerk
