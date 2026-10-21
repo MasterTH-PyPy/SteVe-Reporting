@@ -76,7 +76,12 @@ def audit(action: str, detail: str = ""):
 # ─────────────────────────────────────────────
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+_sk = os.environ.get("SECRET_KEY", "")
+if not _sk or _sk.startswith("bitte-"):
+    log.warning("SECRET_KEY fehlt oder ist der Platzhalter – nutze zufälligen Key "
+                "(Sessions gehen bei jedem Neustart verloren). Bitte in .env setzen!")
+    _sk = secrets.token_hex(32)
+app.secret_key = _sk
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.config["SESSION_COOKIE_SECURE"]   = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True

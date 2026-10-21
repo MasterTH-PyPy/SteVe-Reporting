@@ -11,15 +11,8 @@ services:
     restart: unless-stopped
     ports:
       - "5000:5000"
-    environment:
-      # SteVe-DB-Verbindung
-      DOCKER_CONTAINER: steve-steve-3120-db-1
-      DB_NAME: steve
-      DB_USER: steve
-      DB_PASSWORD: "5EcpFOss1jmFj8"
-      STEVE_VERSION: current
-      # Flask Secret Key – bitte ändern!
-      SECRET_KEY: "bitte-einen-langen-zufaelligen-wert-hier-eintragen"
+    # Zugangsdaten & Secret Key: siehe .env.example → als .env kopieren
+    env_file: .env
     volumes:
       # Docker-Socket für docker exec
       - /var/run/docker.sock:/var/run/docker.sock
