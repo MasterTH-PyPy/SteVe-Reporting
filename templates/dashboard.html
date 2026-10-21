@@ -21,7 +21,7 @@
           <div class="text-muted small" id="statLabel1">
             {% if role == 'buchhaltung' %}Verbrauch letzte 12 Monate{% else %}Verbrauch letzte 12 Monate{% endif %}
           </div>
-          <div class="fw-bold fs-4" id="statKwh">{{ "%.3f"|format(init_kwh) }} kWh</div>
+          <div class="fw-bold fs-4" id="statKwh">{{ init_kwh|de_num }} kWh</div>
         </div>
       </div>
     </div>
@@ -36,7 +36,7 @@
           <div class="text-muted small" id="statLabel2">
             {% if role == 'buchhaltung' %}Ladevorgänge letzte 12 Monate{% else %}Ladevorgänge letzte 12 Monate{% endif %}
           </div>
-          <div class="fw-bold fs-4" id="statCount">{{ init_count }}</div>
+          <div class="fw-bold fs-4" id="statCount">{{ init_count|de_num(0) }}</div>
         </div>
       </div>
     </div>
@@ -146,6 +146,10 @@
 {# Chart.js – kein SRI damit kein stiller Block bei Hash-Mismatch #}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
+// Zahl im deutschen Format (1.234,567)
+const deNum = (v, d) => Number(v || 0).toLocaleString('de-DE',
+  { minimumFractionDigits: d, maximumFractionDigits: d });
+
 // ─── Farb-Palette ───────────────────────────────────────────
 const PALETTE = [
   '#1a56db','#16bdca','#e74694','#f59e0b','#10b981',
@@ -191,10 +195,10 @@ function initChart(type, labels, datasets) {
         legend: { display: isStacked, position: 'bottom' },
         tooltip: {
           callbacks: {
-            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)} kWh`,
+            label: ctx => ` ${ctx.dataset.label}: ${deNum(ctx.parsed.y, 3)} kWh`,
             footer: isStacked ? (items) => {
               const sum = items.reduce((a, b) => a + b.parsed.y, 0);
-              return `Gesamt: ${sum.toFixed(3)} kWh`;
+              return `Gesamt: ${deNum(sum, 3)} kWh`;
             } : undefined,
           }
         }
@@ -209,7 +213,7 @@ function initChart(type, labels, datasets) {
           stacked: isStacked,
           beginAtZero: true,
           title: { display: true, text: 'kWh' },
-          ticks: { callback: v => v.toFixed(1) },
+          ticks: { callback: v => deNum(v, 1) },
         }
       }
     }
@@ -246,8 +250,8 @@ function loadStats(ym) {
     .then(d => {
       spinner.classList.add('d-none');
       // Stat-Cards
-      document.getElementById('statKwh').textContent  = d.total_kwh.toFixed(3) + ' kWh';
-      document.getElementById('statCount').textContent = d.total_count;
+      document.getElementById('statKwh').textContent  = deNum(d.total_kwh, 3) + ' kWh';
+      document.getElementById('statCount').textContent = deNum(d.total_count, 0);
       const period = ym ? monthLabel(ym) : 'letzte 12 Monate';
       document.getElementById('statLabel1').textContent = 'Verbrauch ' + period;
       document.getElementById('statLabel2').textContent = 'Ladevorgänge ' + period;

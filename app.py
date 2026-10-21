@@ -125,6 +125,28 @@ def log_access(response):
     )
     return response
 
+@app.template_filter("de_num")
+def de_num(value, decimals: int = 3) -> str:
+    """Zahl im deutschen Format: 1.234,567"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "–" if value in (None, "", "NULL") else str(value)
+    s = f"{v:,.{decimals}f}"                      # 1,234.567
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+@app.template_filter("de_dt")
+def de_dt(value) -> str:
+    """'2026-09-01 07:12:33' → '01.09.2026 07:12'"""
+    if not value or value == "NULL":
+        return "–"
+    try:
+        return datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return str(value)
+
+
 @app.context_processor
 def inject_globals():
     return {
