@@ -43,6 +43,22 @@
   </div>
 </div>
 
+{# ── Laufende Ladevorgänge (live) ───────────────────────── #}
+<div class="card border-0 shadow-sm mb-4" id="liveCard">
+  <div class="card-header bg-transparent d-flex align-items-center justify-content-between">
+    <span class="fw-semibold">
+      <i class="bi bi-ev-station me-2 text-success"></i>Laufende Ladevorgänge
+      <span class="badge bg-success ms-1 d-none" id="liveCount"></span>
+    </span>
+    <span class="text-muted small" id="liveUpdated" title="Aktualisiert sich alle 15 Sekunden">
+      <i class="bi bi-arrow-repeat me-1"></i>–
+    </span>
+  </div>
+  <div class="card-body py-3" id="liveBody">
+    <span class="text-muted small">Lade …</span>
+  </div>
+</div>
+
 {# ── Steuerleiste + Chart in einer Card ───────────────────── #}
 <div class="card border-0 shadow-sm mb-4">
 
@@ -346,5 +362,83 @@ window.addEventListener('load', function() {
   if (initYm) onMonthChange(initYm);  // Export-Status setzen + Chart laden
   else loadStats('');
 });
+</script>
+<script>
+// ─── Live: laufende Ladevorgänge ────────────────────────────
+(() => {
+  const body = document.getElementById('liveBody');
+  const showName = {{ 'true' if role == 'buchhaltung' else 'false' }};
+  const num = (v, d) => v === null || v === undefined ? '–'
+    : Number(v).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+  const dauer = m => m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
+
+  function render(list) {
+    const cnt = document.getElementById('liveCount');
+    cnt.textContent = list.length;
+    cnt.classList.toggle('d-none', !list.length);
+    body.replaceChildren();
+    if (!list.length) {
+      body.append(el('span', 'text-muted small', 'Aktuell lädt kein Fahrzeug.'));
+      return;
+    }
+    const row = el('div', 'row g-3');
+    for (const t of list) {
+      const col = el('div', 'col-12 col-md-6 col-xl-4');
+      const box = el('div', 'border rounded-3 p-3 h-100');
+
+      const head = el('div', 'd-flex justify-content-between align-items-start mb-2');
+      const who = el('div');
+      who.append(el('div', 'fw-semibold', showName && t.name ? t.name : t.chip));
+      who.append(el('div', 'text-muted small', `${t.station} · Anschluss ${t.anschluss}`));
+      const pw = el('div', 'text-end');
+      pw.append(el('div', 'fs-3 fw-bold text-success lh-1', num(t.power_kw, 1)));
+      pw.append(el('div', 'text-muted small', t.offered_kw !== null ? `kW von max. ${num(t.offered_kw, 1)}` : 'kW'));
+      head.append(who, pw);
+
+      // Auslastung gegenüber angebotener Leistung
+      const bar = el('div', 'progress mb-2');
+      bar.style.height = '6px';
+      const pct = t.offered_kw ? Math.min(100, 100 * (t.power_kw || 0) / t.offered_kw) : 0;
+      const fill = el('div', 'progress-bar bg-success');
+      fill.style.width = pct + '%';
+      bar.append(fill);
+
+      const facts = el('div', 'd-flex flex-wrap gap-3 small');
+      const fact = (icon, text, title) => {
+        const f = el('span', 'text-nowrap'); f.title = title;
+        f.append(el('i', `bi ${icon} me-1 text-muted`), document.createTextNode(text));
+        return f;
+      };
+      facts.append(
+        fact('bi-battery-charging', `${num(t.energy_kwh, 2)} kWh`, 'Seit Start geladen'),
+        fact('bi-clock', dauer(t.dauer_min), `Seit ${t.start}`),
+        fact('bi-diagram-3', `${t.phases}-phasig · ${t.currents.map(c => num(c, 1)).join(' / ')} A`, 'Strom L1 / L2 / L3'),
+      );
+      box.append(head, bar, facts);
+      if (t.updated) box.append(el('div', 'text-muted small mt-2', `Messwert von ${t.updated}`));
+      col.append(box); row.append(col);
+    }
+    body.append(row);
+  }
+
+  async function load() {
+    try {
+      const r = await fetch('{{ url_for("api_live") }}', { credentials: 'same-origin' });
+      if (r.status === 401 || r.redirected) { location.reload(); return; }
+      render(await r.json());
+      document.getElementById('liveUpdated').lastChild.textContent =
+        ' aktualisiert ' + new Date().toLocaleTimeString('de-DE');
+    } catch (e) { /* beim nächsten Intervall erneut */ }
+  }
+  load();
+  setInterval(() => { if (!document.hidden) load(); }, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+})();
 </script>
 {% endblock %}

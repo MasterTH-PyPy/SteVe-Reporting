@@ -83,6 +83,7 @@
             <th class="text-end">Dauer (min)</th>
             <th class="text-end">Energie (kWh)</th>
             <th class="text-end" title="Durchschnittliche Ladeleistung = Energie ÷ Dauer">Ø kW</th>
+            <th class="text-end" title="Höchste von der Wallbox gemessene Leistung">Max. kW</th>
             <th>Stopgrund</th>
           </tr>
         </thead>
@@ -100,6 +101,7 @@
               {{ tx.energie_kwh|de_num }}
             </td>
             <td class="text-end">{{ tx.leistung_kw|de_num(2) }}</td>
+            <td class="text-end">{{ tx.max_kw|de_num(2) }}</td>
             <td class="small text-muted">{{ tx.stopgrund }}</td>
           </tr>
           {% endfor %}
@@ -110,6 +112,7 @@
                 class="text-end">Gesamt:</td>
             <td class="text-end">{{ total_energy|de_num }}</td>
             <td class="text-end" title="Gesamtenergie ÷ Gesamtladedauer">{{ avg_kw|de_num(2) }}</td>
+            <td></td>
             <td></td>
           </tr>
         </tfoot>

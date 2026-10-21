@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -151,14 +151,22 @@ def local_dt(value) -> str:
 
 
 @app.template_filter("de_dt")
+def utc_to_local(value):
+    """SteVe-UTC-String → naive datetime in Europe/Berlin (für Excel), sonst None."""
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import timezone
+        dt = datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S")
+        return dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Europe/Berlin")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
 def de_dt(value) -> str:
-    """'2026-09-01 07:12:33' → '01.09.2026 07:12'"""
+    """SteVe-Zeit (UTC) '2026-09-01 05:12:33' → '01.09.2026 07:12' (Ortszeit)"""
     if not value or value == "NULL":
         return "–"
-    try:
-        return datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y %H:%M")
-    except ValueError:
-        return str(value)
+    return local_dt(value)
 
 
 @app.context_processor
@@ -439,7 +447,133 @@ def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
         tx = dict(zip(cols, r))
         tx["leistung_kw"] = avg_power_kw(tx.get("energie_kwh"), tx.get("dauer_min"))
         result.append(tx)
+    peaks = fetch_peak_power([tx["id"] for tx in result])
+    for tx in result:
+        tx["max_kw"] = peaks.get(str(tx["id"]))
     return result
+
+
+# Leistung in W, auch wenn eine Wallbox kW meldet
+_POWER_W = "CAST(mv.value AS DECIMAL(14,3)) * IF(mv.unit = 'kW', 1000, 1)"
+
+def _tx_ids(ids) -> str:
+    """Nur ganzzahlige Transaktions-IDs in SQL übernehmen."""
+    return ", ".join(str(int(i)) for i in ids if str(i).isdigit())
+
+
+def fetch_peak_power(tx_ids: list) -> dict:
+    """Höchste gemessene Gesamtleistung je Ladevorgang → {transaction_pk: kW}."""
+    if STEVE_VERSION != "current":
+        return {}
+    ids = _tx_ids(tx_ids)
+    if not ids:
+        return {}
+    rows = run_mysql(f"""
+        SELECT mv.transaction_pk, ROUND(MAX({_POWER_W}) / 1000, 2)
+        FROM connector_meter_value mv
+        WHERE mv.transaction_pk IN ({ids})
+          AND mv.measurand = 'Power.Active.Import' AND mv.phase IS NULL
+        GROUP BY mv.transaction_pk;""")
+    out = {}
+    for r in rows:
+        if len(r) >= 2 and r[1] not in ("", "NULL"):
+            out[r[0]] = float(r[1])
+    return out
+
+
+LIVE_STALE_MIN = 15   # Laufende Vorgänge ohne Messwert seit X min ausblenden (Hänger)
+
+def fetch_live_charging(chips: list = None) -> list:
+    """
+    Laufende Ladevorgänge (Start ohne Stop) mit den letzten Messwerten.
+    chips=None → alle Chips (Buchhaltung/Admin).
+    """
+    if STEVE_VERSION != "current":
+        return []
+    chip_sql = ""
+    if chips is not None:
+        if not chips:
+            return []
+        chip_sql = "AND ts.id_tag IN (" + ", ".join(f"'{_sanitize_chip(c)}'" for c in chips) + ")"
+    if has_evse_schema():
+        join, col = "LEFT JOIN evse c ON ts.evse_pk = c.evse_pk", "c.evse_id"
+    else:
+        join, col = "LEFT JOIN connector c ON ts.connector_pk = c.connector_pk", "c.connector_id"
+    rows = run_mysql(f"""
+        SELECT ts.transaction_pk, ts.id_tag, c.charge_box_id, {col},
+               ts.start_timestamp, ts.start_value
+        FROM transaction_start ts
+        LEFT JOIN transaction_stop te ON ts.transaction_pk = te.transaction_pk
+        {join}
+        WHERE te.transaction_pk IS NULL
+          AND ts.start_timestamp > UTC_TIMESTAMP() - INTERVAL 7 DAY
+          {chip_sql}
+        ORDER BY ts.start_timestamp;""")
+    txs = {}
+    for r in rows:
+        if len(r) >= 6:
+            txs[r[0]] = {"id": r[0], "chip": r[1], "station": r[2], "anschluss": r[3],
+                         "start_time": r[4], "start_value": r[5]}
+    if not txs:
+        return []
+
+    ids = _tx_ids(txs.keys())
+    vals = run_mysql(f"""
+        SELECT mv.transaction_pk, mv.measurand, COALESCE(mv.phase, ''), mv.unit,
+               mv.value, mv.value_timestamp
+        FROM connector_meter_value mv
+        JOIN (SELECT transaction_pk, MAX(value_timestamp) AS last_ts
+              FROM connector_meter_value
+              WHERE transaction_pk IN ({ids})
+              GROUP BY transaction_pk) m
+          ON mv.transaction_pk = m.transaction_pk AND mv.value_timestamp = m.last_ts;""")
+    for r in vals:
+        if len(r) < 6 or r[0] not in txs:
+            continue
+        tx = txs[r[0]]
+        try:
+            v = float(r[4])
+        except ValueError:
+            continue
+        if r[3] == "kW":
+            v *= 1000
+        elif r[3] == "kWh":
+            v *= 1000
+        tx.setdefault("m", {})[(r[1], r[2])] = v
+        tx["last_ts"] = r[5]
+
+    stale = _utc(minutes=LIVE_STALE_MIN)
+    notes = {c["id_tag"]: c["note"] for c in fetch_all_chips()}
+    out = []
+    for tx in txs.values():
+        m = tx.get("m", {})
+        ref = tx.get("last_ts") or tx["start_time"]
+        if str(ref)[:19] < stale:
+            continue   # Vorgang ohne Stop, aber seit langem keine Messwerte → Hänger
+        try:
+            energy = (m[("Energy.Active.Import.Register", "")] - float(tx["start_value"])) / 1000
+        except (KeyError, ValueError, TypeError):
+            energy = None
+        currents = [m.get(("Current.Import", p)) for p in ("L1", "L2", "L3")]
+        power_w  = m.get(("Power.Active.Import", ""))
+        offered  = m.get(("Power.Offered", ""))
+        start    = datetime.strptime(str(tx["start_time"])[:19], "%Y-%m-%d %H:%M:%S")
+        out.append({
+            "id":         tx["id"],
+            "chip":       tx["chip"],
+            "name":       notes.get(tx["chip"], ""),
+            "station":    tx["station"] or "",
+            "anschluss":  tx["anschluss"] or "",
+            "start":      local_dt(tx["start_time"]),
+            "dauer_min":  int((datetime.utcnow() - start).total_seconds() // 60),
+            "power_kw":   round(power_w / 1000, 2) if power_w is not None else None,
+            "offered_kw": round(offered / 1000, 1) if offered is not None else None,
+            "energy_kwh": round(energy, 2) if energy is not None and energy >= 0 else None,
+            "currents":   [round(c, 1) if c is not None else None for c in currents],
+            "phases":     sum(1 for c in currents if c is not None and c >= 1.0),
+            "updated":    local_dt(tx.get("last_ts")) if tx.get("last_ts") else None,
+        })
+    return out
 
 
 def avg_power_kw(kwh, minutes):
@@ -647,6 +781,7 @@ _XL_COLUMNS = [
     ("zaehler_ende",  "Zähler Ende (Wh)",  18, _XL_RIGHT),
     ("energie_kwh",   "Energie (kWh)",      15, _XL_RIGHT),
     ("leistung_kw",   "Ø Leistung (kW)",   15, _XL_RIGHT),
+    ("max_kw",        "Max. Leistung (kW)", 17, _XL_RIGHT),
     ("stopgrund",     "Stopgrund",          18, _XL_LEFT),
 ]
 
@@ -874,10 +1009,12 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
             for col_idx, (key, _, _, align) in enumerate(_XL_COLUMNS, 1):
                 raw = tx.get(key, "")
                 val = None if raw in ("NULL", None, "") else raw
-                if key in ("anschluss", "zaehler_start", "zaehler_ende"):
+                if key in ("start_time", "stop_time"):
+                    val = utc_to_local(val) or val
+                elif key in ("anschluss", "zaehler_start", "zaehler_ende"):
                     try: val = int(val)
                     except: pass
-                elif key in ("dauer_min", "energie_kwh", "leistung_kw"):
+                elif key in ("dauer_min", "energie_kwh", "leistung_kw", "max_kw"):
                     try: val = float(val)
                     except: pass
                 c = ws.cell(row=row_idx, column=col_idx, value=val)
@@ -887,7 +1024,9 @@ def build_excel(transactions: list, label: str, date_from: str = "", date_to: st
                     c.number_format = "0.000"
                 elif key == "dauer_min" and val is not None:
                     c.number_format = "0.0"
-                elif key == "leistung_kw" and val is not None:
+                elif key in ("start_time", "stop_time") and isinstance(val, datetime):
+                    c.number_format = "DD.MM.YYYY HH:MM"
+                elif key in ("leistung_kw", "max_kw") and val is not None:
                     c.number_format = "0.00"
 
         total_row = len(rows) + 4
@@ -1276,6 +1415,26 @@ def api_stats():
                 "total_kwh":   round(sum(s["kwh"]   for s in stats), 3),
                 "total_count": sum(s["count"] for s in stats),
             })
+
+
+def own_chips() -> list:
+    """Chips des angemeldeten users/userplus (über die zugewiesene Note)."""
+    row = get_db().execute("SELECT steve_user FROM web_users WHERE id=?",
+                           (session["user_id"],)).fetchone()
+    return fetch_chips_for_note(row["steve_user"]) if row and row["steve_user"] else []
+
+
+@app.route("/api/live")
+@role_required("user", "userplus", "buchhaltung", "admin")
+def api_live():
+    """Laufende Ladevorgänge – Buchhaltung/Admin alle, sonst nur eigene Chips."""
+    if view_role() == "buchhaltung":
+        data = fetch_live_charging(None)
+    else:
+        data = fetch_live_charging(own_chips())
+        for d in data:
+            d["name"] = ""          # eigene Vorgänge – Name nicht nötig
+    return jsonify(data)
 
 
 @app.route("/history")
