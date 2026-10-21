@@ -161,8 +161,8 @@ def _validate_date(d: str) -> str:
     return d
 
 def _sanitize_chip(chip: str) -> str:
-    """Nur erlaubte Zeichen für RFID-Chip-IDs."""
-    if not re.fullmatch(r'[0-9A-Fa-f:\-]{1,64}', chip):
+    """Nur erlaubte Zeichen für RFID-Chip-IDs (Hex, Bindestriche, alphanumerisch)."""
+    if not re.fullmatch(r'[0-9A-Za-z:\-]{1,64}', chip):
         raise ValueError(f"Ungültige Chip-ID: {chip!r}")
     return chip
 
