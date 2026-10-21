@@ -2,7 +2,7 @@
 SteVe Ladehistorie – Web-Frontend
 ==================================
 Berechtigungsstufen:
-  admin        – Userverwaltung (SteVe-Mitarbeiter zuweisen); kein Zugriff auf Ladevorgänge
+  admin        – Userverwaltung + Dashboard/Historie/Export wie Buchhaltung
   buchhaltung  – Alle Chips, alle Zeiträume, Excel-Export
   userplus     – Eigene Chips, Monatsansicht + Tagesansicht, kein Export
   user         – Eigene Chips, nur Monatsansicht, kein Export
@@ -872,6 +872,11 @@ def role_required(*roles):
         return decorated
     return decorator
 
+def view_role() -> str:
+    """Admin sieht Dashboard/Historie/Export wie die Buchhaltung."""
+    r = session.get("role")
+    return "buchhaltung" if r == "admin" else r
+
 # ─────────────────────────────────────────────
 # Zeitraum-Hilfsfunktionen
 # ─────────────────────────────────────────────
@@ -926,8 +931,6 @@ def get_days_in_month(ym: str) -> list:
 @app.route("/")
 def index():
     if "user_id" in session:
-        if session.get("role") == "admin":
-            return redirect(url_for("admin_users"))
         return redirect(url_for("dashboard"))
     return redirect(url_for("login"))
 
@@ -961,8 +964,6 @@ def login():
             if ca and pca and ca == pca and user["role"] != "admin":
                 session["must_change_password"] = True
                 return redirect(url_for("change_password"))
-            if user["role"] == "admin":
-                return redirect(url_for("admin_users"))
             return redirect(url_for("dashboard"))
         log.warning("LOGIN_FAIL | user=%s | ip=%s", username, request.remote_addr)
         flash("Benutzername oder Passwort falsch.", "danger")
@@ -1014,9 +1015,9 @@ def change_password():
 # ─────────────────────────────────────────────
 
 @app.route("/dashboard")
-@role_required("user", "userplus", "buchhaltung")
+@role_required("user", "userplus", "buchhaltung", "admin")
 def dashboard():
-    role   = session["role"]
+    role   = view_role()
     # Aktueller Monat + 12 vergangene = 13 Einträge
     months = get_months(12, include_current=True)
     all_chips_info = fetch_all_chips() if role == "buchhaltung" else []
@@ -1052,10 +1053,10 @@ def dashboard():
 
 
 @app.route("/api/stats")
-@role_required("user", "userplus", "buchhaltung")
+@role_required("user", "userplus", "buchhaltung", "admin")
 def api_stats():
     """JSON-Endpunkt für Chart.js-Daten."""
-    role        = session["role"]
+    role        = view_role()
     ym          = request.args.get("month", "")        # leer = Übersicht 12 Monate
     note_filter = request.args.get("note_filter", "").strip()
 
@@ -1120,9 +1121,9 @@ def api_stats():
 
 
 @app.route("/history")
-@role_required("user", "userplus", "buchhaltung")
+@role_required("user", "userplus", "buchhaltung", "admin")
 def history():
-    role        = session["role"]
+    role        = view_role()
     ym          = request.args.get("month", "")
     day         = request.args.get("day", "")
     chip_filter = request.args.getlist("chips")
@@ -1190,7 +1191,7 @@ def history():
 
 
 @app.route("/export")
-@role_required("buchhaltung")
+@role_required("buchhaltung", "admin")
 def export():
     ym          = request.args.get("month", "")
     chip_filter = request.args.getlist("chips")
