@@ -70,6 +70,21 @@ def audit(action: str, detail: str = ""):
         msg += f" | {detail}"
     log.info(msg)
 
+access_log = logging.getLogger("steve.access")
+
+@app.after_request
+def log_access(response):
+    user   = session.get("username", "-") if session else "-"
+    log.info(
+        '%s %s %s | %d | user=%s',
+        request.remote_addr,
+        request.method,
+        request.full_path.rstrip("?"),
+        response.status_code,
+        user,
+    )
+    return response
+
 # ─────────────────────────────────────────────
 # App
 # ─────────────────────────────────────────────
