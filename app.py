@@ -42,7 +42,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "data", "users.db")
 
 # SteVe-DB-Verbindung aus Umgebungsvariablen (via docker-compose env_file)
-DOCKER_CONTAINER = os.environ.get("DOCKER_CONTAINER", "steve-steve-3120-db-1")
+DOCKER_CONTAINER = os.environ.get("DOCKER_CONTAINER", "steve-db-1")
 DB_NAME          = os.environ.get("DB_NAME",          "steve")
 DB_USER          = os.environ.get("DB_USER",          "steve")
 DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
