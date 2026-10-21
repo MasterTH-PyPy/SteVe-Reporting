@@ -76,12 +76,31 @@ def audit(action: str, detail: str = ""):
 # ─────────────────────────────────────────────
 
 app = Flask(__name__)
-_sk = os.environ.get("SECRET_KEY", "")
-if not _sk or _sk.startswith("bitte-"):
-    log.warning("SECRET_KEY fehlt oder ist der Platzhalter – nutze zufälligen Key "
-                "(Sessions gehen bei jedem Neustart verloren). Bitte in .env setzen!")
-    _sk = secrets.token_hex(32)
-app.secret_key = _sk
+def _load_secret_key() -> str:
+    """SECRET_KEY aus .env; sonst einmalig erzeugen und im Daten-Volume ablegen,
+    damit alle Gunicorn-Worker und Neustarts denselben Key nutzen."""
+    sk = os.environ.get("SECRET_KEY", "")
+    if sk and not sk.startswith("bitte-"):
+        return sk
+    path = os.path.join(BASE_DIR, "data", "secret_key")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        # O_EXCL: nur der erste Worker legt die Datei an, die anderen lesen sie
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(secrets.token_hex(32))
+        log.warning("SECRET_KEY nicht in .env gesetzt – neuen Key in %s erzeugt.", path)
+    except FileExistsError:
+        pass
+    for _ in range(50):  # falls ein anderer Worker gerade noch schreibt
+        with open(path) as f:
+            sk = f.read().strip()
+        if sk:
+            return sk
+        import time; time.sleep(0.05)
+    raise RuntimeError(f"SECRET_KEY-Datei {path} ist leer")
+
+app.secret_key = _load_secret_key()
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # echte Client-IP vom Proxy
 app.config["SESSION_COOKIE_SECURE"]   = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
