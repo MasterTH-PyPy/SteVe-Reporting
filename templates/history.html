@@ -20,8 +20,12 @@
       <i class="bi bi-file-earmark-excel me-1"></i>Excel exportieren
     </a>
     {% elif role == 'buchhaltung' %}
-    <span class="btn btn-outline-secondary btn-sm disabled" title="Kein Export für den laufenden Monat">
-      <i class="bi bi-file-earmark-excel me-1"></i>Excel exportieren
+    <span class="d-inline-block export-wrap locked" tabindex="0"
+          data-bs-toggle="tooltip" data-bs-placement="bottom"
+          data-bs-title="Export nur für abgeschlossene Monate möglich – bitte einen vergangenen Monat auswählen.">
+      <span class="btn btn-outline-secondary btn-sm disabled">
+        <i class="bi bi-file-earmark-excel me-1"></i>Excel exportieren
+      </span>
     </span>
     {% endif %}
     <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">

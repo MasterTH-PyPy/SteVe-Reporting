@@ -124,9 +124,13 @@
   {# Export-Button unter dem Chart – nur Buchhaltung #}
   {% if role == 'buchhaltung' %}
   <div class="card-footer bg-transparent border-top-0 pt-0 pb-3 px-3">
-    <button type="button" class="btn btn-success w-100" id="exportBtn" disabled>
-      <i class="bi bi-file-earmark-excel me-2"></i>Kompletten Monat als Excel exportieren
-    </button>
+    <span class="d-block export-wrap locked" id="exportWrap" tabindex="0"
+          data-bs-toggle="tooltip" data-bs-placement="top"
+          data-bs-title="Export nur für abgeschlossene Monate möglich – bitte einen vergangenen Monat auswählen.">
+      <button type="button" class="btn btn-success w-100" id="exportBtn" disabled>
+        <i class="bi bi-file-earmark-excel me-2"></i>Kompletten Monat als Excel exportieren
+      </button>
+    </span>
   </div>
   {% endif %}
 </div>
@@ -295,8 +299,12 @@ function onMonthChange(ym) {
   const todayYm = new Date().toISOString().slice(0,7);
   const exportBtn = document.getElementById('exportBtn');
   if (exportBtn) {
-    exportBtn.disabled = (!ym || ym === todayYm);
-    exportBtn.title = (!ym || ym === todayYm) ? 'Kein Export für den laufenden Monat' : '';
+    const locked = (!ym || ym === todayYm);
+    exportBtn.disabled = locked;
+    const wrap = document.getElementById('exportWrap');
+    wrap.classList.toggle('locked', locked);
+    const tip = bootstrap.Tooltip.getOrCreateInstance(wrap);
+    if (locked) { tip.enable(); } else { tip.hide(); tip.disable(); }
   }
   if (document.getElementById('exportMonth'))
     document.getElementById('exportMonth').value = ym;
@@ -335,7 +343,7 @@ function validateMonth() {
 window.addEventListener('load', function() {
   const sel = document.getElementById('monthSelect');
   const initYm = sel ? sel.value : '';
-  if (initYm) onMonthChange(initYm);  // Tagesauswahl befüllen + Chart laden
+  if (initYm) onMonthChange(initYm);  // Export-Status setzen + Chart laden
   else loadStats('');
 });
 </script>

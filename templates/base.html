@@ -91,5 +91,19 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 {% block scripts %}{% endblock %}
+<script>
+// Bootstrap-Tooltips aktivieren; bei gesperrtem Export auch per Klick/Tippen anzeigen
+document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+  const tip = bootstrap.Tooltip.getOrCreateInstance(el);
+  if (el.classList.contains('export-wrap')) {
+    el.addEventListener('click', () => { if (el.classList.contains('locked')) tip.show(); });
+  }
+  if (el.classList.contains('export-wrap') && !el.classList.contains('locked')) tip.disable();
+});
+</script>
+<style>
+  .export-wrap.locked { cursor: not-allowed; }
+  .export-wrap.locked .btn { pointer-events: none; }
+</style>
 </body>
 </html>
