@@ -7,3 +7,6 @@ users.db
 dist/
 build/
 .DS_Store
+
+# Lokale Anpassungen an docker-compose (siehe docker-compose.override.yml.example)
+docker-compose.override.yml

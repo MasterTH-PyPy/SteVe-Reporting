@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Lokale Anpassungen – NICHT die docker-compose.yml ändern, sondern hier.
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# docker compose liest diese Datei automatisch mit ein und überschreibt damit
+# die Werte aus docker-compose.yml. Sie ist in .gitignore → git pull bleibt sauber.
+# Ergebnis prüfen:  docker compose config
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  reporting:
+    # Beispiel: anderer Port (Listen wie "ports" werden sonst ergänzt statt
+    # ersetzt – "!override" ersetzt sie komplett, ab Docker Compose 2.24)
+    # ports: !override
+    #   - "127.0.0.1:8080:5000"
+
+    # Beispiel: zusätzliches Netzwerk, z. B. für den Nginx Proxy Manager
+    # networks:
+    #   - npm_default
+
+    # Beispiel: eigene Umgebungsvariablen zusätzlich zur .env
+    # environment:
+    #   TZ: Europe/Berlin
+
+# networks:
+#   npm_default:
+#     external: true
