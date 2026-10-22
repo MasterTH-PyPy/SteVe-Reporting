@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -482,6 +482,166 @@ def fetch_peak_power(tx_ids: list) -> dict:
 
 
 LIVE_STALE_MIN = 15   # Laufende Vorgänge ohne Messwert seit X min ausblenden (Hänger)
+
+
+# ─────────────────────────────────────────────
+# Wallbox-Übersicht
+# ─────────────────────────────────────────────
+
+# OCPP-Status → (deutsche Bezeichnung, Bootstrap-Farbe)
+OCPP_STATUS = {
+    "Available":     ("Frei",                 "success"),
+    "Preparing":     ("Auto angesteckt",      "info"),
+    "Charging":      ("Lädt",                 "primary"),
+    "SuspendedEV":   ("Pausiert (Auto)",      "warning"),
+    "SuspendedEVSE": ("Pausiert (Wallbox)",   "warning"),
+    "Finishing":     ("Beendet, noch steckt", "info"),
+    "Reserved":      ("Reserviert",           "secondary"),
+    "Occupied":      ("Belegt",               "primary"),
+    "Unavailable":   ("Nicht verfügbar",      "secondary"),
+    "Faulted":       ("Störung",              "danger"),
+}
+
+def _hex_text(h: str) -> str:
+    if not h or h == "NULL":
+        return ""
+    try:
+        t = bytes.fromhex(h).decode("utf-8")
+    except Exception:
+        return ""
+    return " ".join(t.split())
+
+def _nn(v):
+    return None if v in (None, "", "NULL") else v
+
+def _ago_s(ts):
+    try:
+        dt = datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return max(0, int((datetime.utcnow() - dt).total_seconds()))
+
+
+_HB_CACHE = {"t": 0, "v": None}
+
+def heartbeat_interval_s() -> int:
+    """Heartbeat-Intervall aus den SteVe-Einstellungen (Fallback 15 min), 10 min gecacht."""
+    import time
+    if _HB_CACHE["v"] and time.time() - _HB_CACHE["t"] < 600:
+        return _HB_CACHE["v"]
+    rows = run_mysql("SELECT heartbeat_interval_in_seconds FROM settings LIMIT 1;")
+    try:
+        v = int(rows[0][0])
+    except (IndexError, ValueError, TypeError):
+        v = 900
+    _HB_CACHE.update(t=time.time(), v=v)
+    return v
+
+
+def fetch_wallboxes() -> dict:
+    if STEVE_VERSION != "current":
+        return {"boxes": [], "heartbeat_s": 0}
+    evse = has_evse_schema()
+    t_conn, c_pk, c_id = ("evse", "evse_pk", "evse_id") if evse else ("connector", "connector_pk", "connector_id")
+
+    boxes = {}
+    for r in run_mysql("""
+        SELECT charge_box_id, endpoint_address, ocpp_protocol, registration_status,
+               charge_point_vendor, charge_point_model, charge_point_serial_number,
+               charge_box_serial_number, fw_version, fw_update_status, fw_update_timestamp,
+               meter_type, meter_serial_number, last_heartbeat_timestamp,
+               HEX(description), HEX(note), diagnostics_status, iccid
+        FROM charge_box ORDER BY charge_box_id;"""):
+        if len(r) < 18:
+            continue
+        boxes[r[0]] = {
+            "id": r[0], "endpoint": _nn(r[1]), "ocpp": _nn(r[2]), "registration": _nn(r[3]),
+            "vendor": _nn(r[4]), "model": _nn(r[5]),
+            "serial": _nn(r[6]) or _nn(r[7]),
+            "firmware": _nn(r[8]), "fw_status": _nn(r[9]),
+            "fw_status_at": local_dt(r[10]) if _nn(r[10]) else None,
+            "meter": " ".join(x for x in (_nn(r[11]), _nn(r[12])) if x) or None,
+            "last_hb_ago": _ago_s(_nn(r[13])), "last_hb": local_dt(r[13]) if _nn(r[13]) else None,
+            "_last_hb_raw": _nn(r[13]),
+            "description": _hex_text(r[14]), "note": _hex_text(r[15]),
+            "diagnostics": _nn(r[16]), "iccid": _nn(r[17]),
+            "connectors": [], "box_status": None,
+            "month_count": 0, "month_kwh": 0.0, "last_tx": None,
+        }
+
+    # Letzter Status je Anschluss (Anschluss 0 = Status der ganzen Wallbox)
+    for r in run_mysql(f"""
+        SELECT e.charge_box_id, e.{c_id}, cs.status, cs.error_code, HEX(cs.error_info),
+               cs.vendor_error_code, cs.status_timestamp
+        FROM {t_conn} e
+        LEFT JOIN connector_status cs
+               ON cs.{c_pk} = e.{c_pk}
+              AND cs.status_timestamp = (SELECT MAX(x.status_timestamp) FROM connector_status x
+                                         WHERE x.{c_pk} = e.{c_pk})
+        ORDER BY e.charge_box_id, e.{c_id};"""):
+        if len(r) < 7 or r[0] not in boxes:
+            continue
+        status = _nn(r[2])
+        label, color = OCPP_STATUS.get(status, (status or "Unbekannt", "secondary"))
+        err = _nn(r[3])
+        c = {"nr": r[1], "status": status, "label": label, "color": color,
+             "error": err if err and err != "NoError" else None,
+             "error_info": _hex_text(r[4]) or None, "vendor_error": _nn(r[5]),
+             "since": local_dt(r[6]) if _nn(r[6]) else None, "since_ago": _ago_s(_nn(r[6])),
+             "_raw_ts": _nn(r[6]), "live": None}
+        if str(r[1]) == "0":
+            boxes[r[0]]["box_status"] = c
+        else:
+            boxes[r[0]]["connectors"].append(c)
+
+    # Statistik laufender Monat (UTC-Monatsgrenze wie im Rest der App)
+    month_start = date.today().replace(day=1).strftime("%Y-%m-%d 00:00:00")
+    for r in run_mysql(f"""
+        SELECT e.charge_box_id, COUNT(*),
+               ROUND(SUM(GREATEST(COALESCE(te.stop_value - ts.start_value, 0), 0)) / 1000, 3)
+        FROM transaction_start ts
+        JOIN {t_conn} e ON ts.{c_pk} = e.{c_pk}
+        LEFT JOIN transaction_stop te ON te.transaction_pk = ts.transaction_pk
+        WHERE ts.start_timestamp >= '{month_start}'
+        GROUP BY e.charge_box_id;"""):
+        if len(r) >= 3 and r[0] in boxes:
+            boxes[r[0]]["month_count"] = int(r[1] or 0)
+            boxes[r[0]]["month_kwh"] = float(r[2]) if _nn(r[2]) else 0.0
+    for r in run_mysql(f"""
+        SELECT e.charge_box_id, MAX(ts.start_timestamp)
+        FROM transaction_start ts JOIN {t_conn} e ON ts.{c_pk} = e.{c_pk}
+        GROUP BY e.charge_box_id;"""):
+        if len(r) >= 2 and r[0] in boxes and _nn(r[1]):
+            boxes[r[0]]["last_tx"] = local_dt(r[1])
+
+    # Laufende Ladevorgänge an die Anschlüsse hängen
+    for lv in fetch_live_charging(None):
+        b = boxes.get(lv["station"])
+        if not b:
+            continue
+        for c in b["connectors"]:
+            if str(c["nr"]) == str(lv["anschluss"]):
+                c["live"] = {k: lv[k] for k in ("power_kw", "energy_kwh", "dauer_min", "name", "chip", "phases")}
+
+    # Online-Status: letzter Kontakt = jüngster Heartbeat oder Statuswechsel
+    hb = heartbeat_interval_s()
+    limit = 2 * hb + 120
+    out = []
+    for b in boxes.values():
+        stamps = [b.pop("_last_hb_raw")] + [c.pop("_raw_ts") for c in b["connectors"]]
+        if b["box_status"]:
+            stamps.append(b["box_status"].pop("_raw_ts"))
+        stamps = [s for s in stamps if s]
+        last = max(stamps) if stamps else None
+        b["last_contact"] = local_dt(last) if last else None
+        b["last_contact_ago"] = _ago_s(last)
+        b["online"] = b["last_contact_ago"] is not None and b["last_contact_ago"] <= limit
+        b["faulted"] = any(c["status"] == "Faulted" or c["error"] for c in b["connectors"]) or \
+                       bool(b["box_status"] and (b["box_status"]["status"] == "Faulted" or b["box_status"]["error"]))
+        b["charging"] = sum(1 for c in b["connectors"] if c["live"])
+        b["power_kw"] = round(sum((c["live"] or {}).get("power_kw") or 0 for c in b["connectors"]), 2)
+        out.append(b)
+    return {"boxes": out, "heartbeat_s": hb, "offline_after_s": limit}
 
 def fetch_live_charging(chips: list = None) -> list:
     """
@@ -1435,6 +1595,18 @@ def api_live():
         for d in data:
             d["name"] = ""          # eigene Vorgänge – Name nicht nötig
     return jsonify(data)
+
+
+@app.route("/wallboxen")
+@role_required("buchhaltung", "admin")
+def wallboxes():
+    return render_template("wallboxes.html", username=session["username"])
+
+
+@app.route("/api/wallboxen")
+@role_required("buchhaltung", "admin")
+def api_wallboxes():
+    return jsonify(fetch_wallboxes())
 
 
 @app.route("/history")

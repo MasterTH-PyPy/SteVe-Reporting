@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}Wallboxen – SteVe Ladehistorie{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4 d-flex align-items-end justify-content-between flex-wrap gap-2">
+  <div>
+    <h3 class="fw-bold mb-1">
+      <i class="bi bi-ev-station me-2 text-primary"></i>Wallboxen
+    </h3>
+    <p class="text-muted mb-0">Status aller Ladestationen in SteVe</p>
+  </div>
+  <span class="text-muted small" id="wbUpdated" title="Aktualisiert sich alle 15 Sekunden">
+    <i class="bi bi-arrow-repeat me-1"></i>–
+  </span>
+</div>
+
+{# ── Zusammenfassung ─────────────────────────────────────── #}
+<div class="row g-3 mb-4" id="wbSummary">
+  {% for key, label, icon, color in [
+      ('total',    'Wallboxen',        'bi-ev-station',          'primary'),
+      ('online',   'Online',           'bi-wifi',                'success'),
+      ('offline',  'Offline',          'bi-wifi-off',            'secondary'),
+      ('charging', 'Laden gerade',     'bi-lightning-charge-fill','primary'),
+      ('faulted',  'Störung',          'bi-exclamation-triangle-fill','danger'),
+      ('power',    'Leistung gesamt',  'bi-speedometer',         'success')] %}
+  <div class="col-6 col-md-4 col-xl-2">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body py-3">
+        <div class="text-muted small"><i class="bi {{ icon }} me-1 text-{{ color }}"></i>{{ label }}</div>
+        <div class="fw-bold fs-4" id="sum-{{ key }}">–</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="row g-3" id="wbList">
+  <div class="col-12 text-muted">Lade …</div>
+</div>
+
+<p class="text-muted small mt-4 mb-0" id="wbHint"></p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const list = document.getElementById('wbList');
+  const openDetails = new Set();      // aufgeklappte Details über Aktualisierungen hinweg merken
+
+  const num = (v, d) => v === null || v === undefined ? '–'
+    : Number(v).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  };
+  const ago = s => {
+    if (s === null || s === undefined) return 'nie';
+    if (s < 60) return 'gerade eben';
+    if (s < 3600) return `vor ${Math.floor(s / 60)} min`;
+    if (s < 86400) return `vor ${Math.floor(s / 3600)} h`;
+    const d = Math.floor(s / 86400);
+    return `vor ${d} ${d === 1 ? 'Tag' : 'Tagen'}`;
+  };
+  const dauer = m => m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
+  const dur = s => s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600 * 10) / 10} h`.replace('.', ',');
+
+  function connectorRow(c, online) {
+    const row = el('div', 'd-flex align-items-start gap-2 py-2 border-top');
+    row.append(el('span', 'badge text-bg-light border flex-shrink-0', `#${c.nr}`));
+    const main = el('div', 'flex-grow-1 small');
+    const top = el('div', 'd-flex flex-wrap align-items-center gap-2');
+    // Offline: Status ist nur der zuletzt bekannte → grau statt farbig
+    top.append(online
+      ? el('span', `badge bg-${c.color}`, c.label)
+      : el('span', 'badge text-bg-light border text-muted', 'zuletzt: ' + c.label));
+    if (c.since) {
+      const t = el('span', 'text-muted', `seit ${ago(c.since_ago).replace('vor ', '')}`);
+      t.title = c.since;
+      top.append(t);
+    }
+    main.append(top);
+    if (c.live) {
+      const l = c.live;
+      const who = l.name || l.chip;
+      main.append(el('div', 'mt-1 fw-semibold text-primary',
+        `${num(l.power_kw, 1)} kW · ${num(l.energy_kwh, 2)} kWh · ${dauer(l.dauer_min)}${who ? ' · ' + who : ''}`));
+    }
+    if (c.error) {
+      const e = el('div', 'mt-1 text-danger');
+      e.append(el('i', 'bi bi-exclamation-octagon me-1'),
+               document.createTextNode(c.error + (c.vendor_error ? ` (${c.vendor_error})` : '') +
+                                       (c.error_info ? ` – ${c.error_info}` : '')));
+      main.append(e);
+    }
+    row.append(main);
+    return row;
+  }
+
+  function fact(dl, label, value) {
+    if (!value) return;
+    dl.append(el('dt', 'col-5 text-muted fw-normal', label), el('dd', 'col-7 mb-1 text-break', value));
+  }
+
+  function boxCard(b) {
+    const col = el('div', 'col-12 col-lg-6 col-xxl-4');
+    const card = el('div', 'card border-0 shadow-sm h-100' + (b.faulted ? ' border-start border-4 border-danger' : ''));
+
+    // Kopf
+    const head = el('div', 'card-header bg-transparent d-flex justify-content-between align-items-start gap-2');
+    const title = el('div');
+    title.append(el('div', 'fw-bold', b.id));
+    const sub = [b.description, b.note].filter(Boolean).join(' · ');
+    if (sub) title.append(el('div', 'text-muted small', sub));
+    const state = el('div', 'text-end flex-shrink-0');
+    state.append(b.online
+      ? el('span', 'badge bg-success', '● Online')
+      : el('span', 'badge bg-secondary', '○ Offline'));
+    const lc = el('div', 'text-muted small mt-1', `Kontakt ${ago(b.last_contact_ago)}`);
+    lc.title = b.last_contact ? `Letzter Kontakt: ${b.last_contact}` : 'Noch kein Kontakt';
+    state.append(lc);
+    head.append(title, state);
+
+    const body = el('div', 'card-body pt-0 pb-2');
+
+    // Gesamtstatus (Anschluss 0), nur wenn auffällig
+    if (b.box_status && (b.box_status.error || !['Available', null].includes(b.box_status.status))) {
+      const bs = b.box_status;
+      const w = el('div', 'small pt-2');
+      w.append(el('span', `badge bg-${bs.color} me-2`, 'Wallbox: ' + bs.label));
+      if (bs.error) w.append(el('span', 'text-danger', bs.error + (bs.error_info ? ` – ${bs.error_info}` : '')));
+      body.append(w);
+    }
+
+    if (b.connectors.length) b.connectors.forEach(c => body.append(connectorRow(c, b.online)));
+    else body.append(el('div', 'text-muted small py-2 border-top', 'Keine Anschlüsse gemeldet'));
+
+    // Monatsstatistik
+    const stat = el('div', 'd-flex flex-wrap gap-3 small border-top pt-2 mt-1');
+    const s = (icon, text, title) => { const x = el('span', 'text-nowrap'); x.title = title;
+      x.append(el('i', `bi ${icon} me-1 text-muted`), document.createTextNode(text)); return x; };
+    stat.append(
+      s('bi-calendar3', `${b.month_count} Ladevorgänge`, 'Im laufenden Monat'),
+      s('bi-lightning-charge', `${num(b.month_kwh, 1)} kWh`, 'Im laufenden Monat (abgeschlossene Vorgänge)'),
+      s('bi-clock-history', b.last_tx ? `zuletzt ${b.last_tx}` : 'noch nie geladen', 'Letzter Ladevorgang (Start)'),
+    );
+    body.append(stat);
+
+    // Details
+    const det = el('details', 'small mt-2');
+    det.open = openDetails.has(b.id);
+    det.addEventListener('toggle', () => det.open ? openDetails.add(b.id) : openDetails.delete(b.id));
+    det.append(el('summary', 'text-muted', 'Gerätedaten'));
+    const dl = el('dl', 'row mb-0 mt-2');
+    fact(dl, 'Hersteller / Modell', [b.vendor, b.model].filter(Boolean).join(' ') || null);
+    fact(dl, 'Seriennummer', b.serial);
+    fact(dl, 'Firmware', b.firmware ? b.firmware + (b.fw_status ? ` (Update: ${b.fw_status}${b.fw_status_at ? ', ' + b.fw_status_at : ''})` : '') : null);
+    fact(dl, 'OCPP', b.ocpp);
+    fact(dl, 'Endpunkt', b.endpoint);
+    fact(dl, 'Registrierung', b.registration);
+    fact(dl, 'Zähler', b.meter);
+    fact(dl, 'SIM (ICCID)', b.iccid);
+    fact(dl, 'Diagnose', b.diagnostics);
+    fact(dl, 'Letzter Heartbeat', b.last_hb ? `${b.last_hb} (${ago(b.last_hb_ago)})` : 'nie');
+    det.append(dl);
+    body.append(det);
+
+    card.append(head, body);
+    col.append(card);
+    return col;
+  }
+
+  function render(d) {
+    const boxes = d.boxes;
+    const set = (k, v) => document.getElementById('sum-' + k).textContent = v;
+    set('total', boxes.length);
+    set('online', boxes.filter(b => b.online).length);
+    set('offline', boxes.filter(b => !b.online).length);
+    set('charging', boxes.reduce((a, b) => a + b.charging, 0));
+    set('faulted', boxes.filter(b => b.faulted).length);
+    set('power', num(boxes.reduce((a, b) => a + (b.power_kw || 0), 0), 1) + ' kW');
+
+    // Störungen und Offline zuerst, dann nach Name
+    boxes.sort((a, b) => (b.faulted - a.faulted) || (a.online - b.online) || a.id.localeCompare(b.id, 'de'));
+    list.replaceChildren();
+    if (!boxes.length) list.append(el('div', 'col-12 text-muted', 'In SteVe sind keine Wallboxen angelegt.'));
+    boxes.forEach(b => list.append(boxCard(b)));
+
+    document.getElementById('wbHint').textContent = d.heartbeat_s
+      ? `Als offline gilt eine Wallbox, wenn sie sich länger als ${dur(d.offline_after_s)} nicht gemeldet hat ` +
+        `(doppeltes Heartbeat-Intervall aus SteVe: ${dur(d.heartbeat_s)}).`
+      : '';
+  }
+
+  async function load() {
+    try {
+      const r = await fetch('{{ url_for("api_wallboxes") }}', { credentials: 'same-origin' });
+      if (r.status === 401 || r.redirected) { location.reload(); return; }
+      render(await r.json());
+      document.getElementById('wbUpdated').lastChild.textContent =
+        ' aktualisiert ' + new Date().toLocaleTimeString('de-DE');
+    } catch (e) { /* beim nächsten Intervall erneut */ }
+  }
+  load();
+  setInterval(() => { if (!document.hidden) load(); }, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+})();
+</script>
+{% endblock %}

@@ -28,6 +28,14 @@
             <i class="bi bi-speedometer2 me-1"></i>Dashboard
           </a>
         </li>
+        {% if session.role in ('admin', 'buchhaltung') %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.endpoint == 'wallboxes' %}active{% endif %}"
+             href="{{ url_for('wallboxes') }}">
+            <i class="bi bi-ev-station me-1"></i>Wallboxen
+          </a>
+        </li>
+        {% endif %}
         {% if session.role == 'admin' %}
         <li class="nav-item">
           <a class="nav-link {% if request.endpoint and 'admin' in (request.endpoint or '') %}active{% endif %}"
