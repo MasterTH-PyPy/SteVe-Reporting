@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}{{ box.id }} – Ladevorgänge {{ period_label }}{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-end justify-content-between flex-wrap gap-2 mb-4">
+  <div>
+    <h3 class="fw-bold mb-1">
+      <i class="bi bi-ev-station me-2 text-primary"></i>{{ box.id }}
+    </h3>
+    <p class="text-muted mb-0">
+      {% set sub = [box.description, box.note]|select|join(' · ') %}
+      {% if sub %}{{ sub }} · {% endif %}Ladevorgänge {{ period_label }}
+    </p>
+  </div>
+  <a href="{{ url_for('wallboxes') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left me-1"></i>Zur Wallbox-Übersicht
+  </a>
+</div>
+
+{# ── Monatsauswahl ─────────────────────────────────────── #}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-body py-3">
+    <form method="get" class="d-flex align-items-center gap-2 flex-wrap">
+      <a class="btn btn-outline-secondary btn-sm" title="Vormonat"
+         href="{{ url_for('wallbox_history', cb_id=box.id, month=prev_ym) }}">
+        <i class="bi bi-chevron-left"></i>
+      </a>
+      <select name="month" class="form-select form-select-sm w-auto" onchange="this.form.submit()">
+        {% set ns = namespace(found=false) %}
+        {% for m in months %}
+          {% if m.value == ym %}{% set ns.found = true %}{% endif %}
+          <option value="{{ m.value }}" {% if m.value == ym %}selected{% endif %}>{{ m.label_select }}</option>
+        {% endfor %}
+        {% if not ns.found %}<option value="{{ ym }}" selected>{{ period_label }}</option>{% endif %}
+      </select>
+      {% if next_ym %}
+      <a class="btn btn-outline-secondary btn-sm" title="Folgemonat"
+         href="{{ url_for('wallbox_history', cb_id=box.id, month=next_ym) }}">
+        <i class="bi bi-chevron-right"></i>
+      </a>
+      {% else %}
+      <span class="btn btn-outline-secondary btn-sm disabled"><i class="bi bi-chevron-right"></i></span>
+      {% endif %}
+      <noscript><button class="btn btn-primary btn-sm">Anzeigen</button></noscript>
+    </form>
+  </div>
+</div>
+
+{# ── Kennzahlen ─────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  {% for label, value, icon in [
+      ('Ladevorgänge', txs|length, 'bi-list-ul'),
+      ('Energie gesamt', (total_kwh|de_num(1)) ~ ' kWh', 'bi-lightning-charge'),
+      ('Personen / Chips', per_person|length, 'bi-people'),
+      ('Ø Ladeleistung', (avg_kw|de_num(1)) ~ ' kW', 'bi-speedometer')] %}
+  <div class="col-6 col-md-3">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body py-3">
+        <div class="text-muted small"><i class="bi {{ icon }} me-1 text-primary"></i>{{ label }}</div>
+        <div class="fw-bold fs-4">{{ value }}</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if txs %}
+{# ── Wer hat wie viel geladen ──────────────────────────── #}
+{% if per_person|length > 1 %}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-header bg-transparent fw-semibold">
+    <i class="bi bi-people me-1 text-primary"></i>Nach Person
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>Person / Chip</th>
+            <th class="text-end">Vorgänge</th>
+            <th class="text-end">Dauer gesamt</th>
+            <th class="text-end">Energie (kWh)</th>
+            <th style="width:30%"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set max_kwh = (per_person|map(attribute='kwh')|max) or 1 %}
+          {% for p in per_person %}
+          <tr>
+            <td>{{ p.name }}</td>
+            <td class="text-end">{{ p.count }}</td>
+            <td class="text-end text-nowrap">{{ (p.min // 60)|int }} h {{ '%02d'|format((p.min % 60)|int) }} min</td>
+            <td class="text-end fw-semibold">{{ p.kwh|de_num(2) }}</td>
+            <td>
+              <div class="progress" style="height:6px">
+                <div class="progress-bar" style="width:{{ (p.kwh / max_kwh * 100)|round(1) }}%"></div>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Einzelne Ladevorgänge ─────────────────────────────── #}
+<div class="card border-0 shadow-sm">
+  <div class="card-header bg-transparent fw-semibold">
+    <i class="bi bi-list-ul me-1 text-primary"></i>Ladevorgänge <span class="text-muted fw-normal small">(neueste zuerst)</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover table-sm mb-0 align-middle">
+        <thead class="table-dark">
+          <tr>
+            <th>Start</th>
+            <th>Ende</th>
+            <th>Person</th>
+            <th>Chip</th>
+            <th class="text-center">Anschluss</th>
+            <th class="text-end">Dauer</th>
+            <th class="text-end">Energie (kWh)</th>
+            <th class="text-end" title="Durchschnittliche Ladeleistung = Energie ÷ Dauer">Ø kW</th>
+            <th class="text-end" title="Höchste von der Wallbox gemessene Leistung">Max. kW</th>
+            <th>Stopgrund</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tx in txs %}
+          <tr {% if tx.running %}class="table-primary"{% endif %}>
+            <td class="text-nowrap small">{{ tx.start_time|de_dt }}</td>
+            <td class="text-nowrap small">
+              {% if tx.running %}
+                <span class="badge bg-primary"><i class="bi bi-lightning-charge-fill me-1"></i>lädt
+                  {% if tx.live and tx.live.power_kw is not none %} · {{ tx.live.power_kw|de_num(1) }} kW{% endif %}
+                </span>
+              {% else %}{{ tx.stop_time|de_dt }}{% endif %}
+            </td>
+            <td>{{ tx.name or '–' }}</td>
+            <td><code class="small">{{ tx.chip }}</code></td>
+            <td class="text-center">{{ tx.anschluss }}</td>
+            <td class="text-end text-nowrap">
+              {% if tx.dauer_min not in (none, '', 'NULL') %}
+                {% set m = tx.dauer_min|float %}{{ (m // 60)|int }} h {{ '%02d'|format((m % 60)|int) }} min
+              {% else %}–{% endif %}
+            </td>
+            <td class="text-end fw-semibold">{{ tx.energie_kwh|de_num(2) }}</td>
+            <td class="text-end">{{ tx.leistung_kw|de_num(1) if not tx.running else '–' }}</td>
+            <td class="text-end">{{ tx.max_kw|de_num(1) }}</td>
+            <td class="small text-muted">{{ tx.stopgrund if tx.stopgrund not in (none, 'NULL') else '' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="table-light fw-bold">
+          <tr>
+            <td colspan="6" class="text-end">Gesamt:</td>
+            <td class="text-end">{{ total_kwh|de_num(2) }}</td>
+            <td class="text-end" title="Energie ÷ Ladedauer der abgeschlossenen Vorgänge">{{ avg_kw|de_num(1) }}</td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+<p class="text-muted small mt-3 mb-0">
+  Zeiten in Ortszeit. Laufende Vorgänge zeigen den aktuellen Zwischenstand.
+</p>
+{% else %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+  In {{ period_label }} gab es an dieser Wallbox keine Ladevorgänge.
+</div>
+{% endif %}
+{% endblock %}

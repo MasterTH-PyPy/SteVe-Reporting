@@ -42,9 +42,14 @@
 {% endblock %}
 
 {% block scripts %}
+<style>
+  .wb-tx-link { border-radius: .25rem; }
+  .wb-tx-link:hover { background: var(--bs-tertiary-bg); }
+</style>
 <script>
 (() => {
   const list = document.getElementById('wbList');
+  const TX_URL = '{{ url_for("wallbox_history", cb_id="__ID__") }}';
   const openDetails = new Set();      // aufgeklappte Details über Aktualisierungen hinweg merken
 
   const num = (v, d) => v === null || v === undefined ? '–'
@@ -136,8 +141,10 @@
     if (b.connectors.length) b.connectors.forEach(c => body.append(connectorRow(c, b.online)));
     else body.append(el('div', 'text-muted small py-2 border-top', 'Keine Anschlüsse gemeldet'));
 
-    // Monatsstatistik
-    const stat = el('div', 'd-flex flex-wrap gap-3 small border-top pt-2 mt-1');
+    // Monatsstatistik – Klick öffnet die Ladevorgänge dieser Wallbox
+    const stat = el('a', 'wb-tx-link d-flex flex-wrap align-items-center gap-3 small border-top pt-2 mt-1 text-reset text-decoration-none');
+    stat.href = TX_URL.replace('__ID__', encodeURIComponent(b.id));
+    stat.title = 'Ladevorgänge dieser Wallbox anzeigen';
     const s = (icon, text, title) => { const x = el('span', 'text-nowrap'); x.title = title;
       x.append(el('i', `bi ${icon} me-1 text-muted`), document.createTextNode(text)); return x; };
     stat.append(
@@ -145,6 +152,9 @@
       s('bi-lightning-charge', `${num(b.month_kwh, 1)} kWh`, 'Im laufenden Monat (abgeschlossene Vorgänge)'),
       s('bi-clock-history', b.last_tx ? `zuletzt ${b.last_tx}` : 'noch nie geladen', 'Letzter Ladevorgang (Start)'),
     );
+    const go = el('span', 'ms-auto text-primary text-nowrap');
+    go.append(document.createTextNode('Ladevorgänge '), el('i', 'bi bi-chevron-right'));
+    stat.append(go);
     body.append(stat);
 
     // Details

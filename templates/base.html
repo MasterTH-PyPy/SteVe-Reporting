@@ -30,7 +30,7 @@
         </li>
         {% if session.role in ('admin', 'buchhaltung') %}
         <li class="nav-item">
-          <a class="nav-link {% if request.endpoint == 'wallboxes' %}active{% endif %}"
+          <a class="nav-link {% if request.endpoint in ('wallboxes', 'wallbox_history') %}active{% endif %}"
              href="{{ url_for('wallboxes') }}">
             <i class="bi bi-ev-station me-1"></i>Wallboxen
           </a>

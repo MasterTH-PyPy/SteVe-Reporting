@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -150,7 +150,6 @@ def local_dt(value) -> str:
         return str(value)
 
 
-@app.template_filter("de_dt")
 def utc_to_local(value):
     """SteVe-UTC-String → naive datetime in Europe/Berlin (für Excel), sonst None."""
     try:
@@ -162,6 +161,7 @@ def utc_to_local(value):
         return None
 
 
+@app.template_filter("de_dt")
 def de_dt(value) -> str:
     """SteVe-Zeit (UTC) '2026-09-01 05:12:33' → '01.09.2026 07:12' (Ortszeit)"""
     if not value or value == "NULL":
@@ -376,11 +376,26 @@ def fetch_all_chips() -> list:
     return result
 
 
-def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
-    """Ladevorgänge für eine Liste von Chips in einem Zeitraum."""
-    if not chips:
-        return []
-    chip_list = ", ".join(f"'{_sanitize_chip(c)}'" for c in chips)
+def _sanitize_station(cb_id: str) -> str:
+    """charge_box_id für SQL – keine Anführungszeichen/Backslashes/Steuerzeichen."""
+    if not cb_id or not re.fullmatch(r'[^\'"\\`\x00-\x1f]{1,255}', cb_id):
+        raise ValueError(f"Ungültige Wallbox-ID: {cb_id!r}")
+    return cb_id
+
+
+def fetch_transactions(chips: list, date_from: str, date_to: str, station: str = None) -> list:
+    """
+    Ladevorgänge für eine Liste von Chips in einem Zeitraum.
+    station gesetzt → stattdessen alle Ladevorgänge dieser Wallbox (chips wird ignoriert).
+    """
+    if station:
+        st = _sanitize_station(station)
+        where_cur, where_old = f"c.charge_box_id = '{st}'", f"t.charge_box_id = '{st}'"
+    else:
+        if not chips:
+            return []
+        chip_list = ", ".join(f"'{_sanitize_chip(c)}'" for c in chips)
+        where_cur, where_old = f"ts.id_tag IN ({chip_list})", f"t.id_tag IN ({chip_list})"
     date_from = _validate_date(date_from)
     date_to   = _validate_date(date_to)
     if STEVE_VERSION == "current":
@@ -411,7 +426,7 @@ def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
             LEFT JOIN ocpp_tag ot          ON ts.id_tag         = ot.id_tag
             LEFT JOIN user_ocpp_tag uot    ON ot.ocpp_tag_pk    = uot.ocpp_tag_pk
             LEFT JOIN web_user wu          ON uot.user_pk       = wu.web_user_pk
-            WHERE ts.id_tag IN ({chip_list})
+            WHERE {where_cur}
               AND ts.start_timestamp BETWEEN '{date_from}' AND '{date_to}'
             ORDER BY ts.start_timestamp;
         """
@@ -433,7 +448,7 @@ def fetch_transactions(chips: list, date_from: str, date_to: str) -> list:
             FROM `transaction` t
             LEFT JOIN ocpp_tag ot ON t.id_tag = ot.id_tag
             LEFT JOIN `user` u    ON ot.ocpp_tag_pk = u.ocpp_tag_pk
-            WHERE t.id_tag IN ({chip_list})
+            WHERE {where_old}
               AND t.start_timestamp BETWEEN '{date_from}' AND '{date_to}'
             ORDER BY t.start_timestamp;
         """
@@ -1607,6 +1622,73 @@ def wallboxes():
 @role_required("buchhaltung", "admin")
 def api_wallboxes():
     return jsonify(fetch_wallboxes())
+
+
+@app.route("/wallboxen/<path:cb_id>")
+@role_required("buchhaltung", "admin")
+def wallbox_history(cb_id):
+    """Ladevorgänge einer Wallbox – Monat wählbar, laufende Vorgänge inklusive."""
+    try:
+        _sanitize_station(cb_id)
+    except ValueError:
+        abort(404)
+    if not run_mysql(f"SELECT 1 FROM charge_box WHERE charge_box_id = '{cb_id}';"):
+        abort(404)
+    box = next((b for b in fetch_wallboxes()["boxes"] if b["id"] == cb_id), {"id": cb_id})
+
+    ym = request.args.get("month", "") or date.today().strftime("%Y-%m")
+    if not re.fullmatch(r"\d{4}-\d{2}", ym):
+        ym = date.today().strftime("%Y-%m")
+    cur = datetime.strptime(ym, "%Y-%m").date()
+    prev_ym = (cur - relativedelta(months=1)).strftime("%Y-%m")
+    next_ym = (cur + relativedelta(months=1)).strftime("%Y-%m")
+    if next_ym > date.today().strftime("%Y-%m"):
+        next_ym = None
+
+    date_from, date_to = month_range(ym)
+    txs = fetch_transactions([], date_from, date_to, station=cb_id)
+
+    # Name je Chip (Kommentar in SteVe), laufende Vorgänge mit Live-Werten ergänzen
+    notes = {c["id_tag"]: c["note"] for c in fetch_all_chips()}
+    live  = {str(l["id"]): l for l in fetch_live_charging(None) if l["station"] == cb_id}
+    for tx in txs:
+        tx["name"] = notes.get(tx["chip"]) or tx.get("benutzer") or ""
+        tx["running"] = _nn(tx.get("stop_time")) is None
+        if tx["running"]:
+            l = live.get(str(tx["id"]))
+            tx["live"] = l
+            if l:
+                tx["energie_kwh"] = l["energy_kwh"]
+                tx["dauer_min"]   = l["dauer_min"]
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    total_kwh = round(sum(_f(t["energie_kwh"]) for t in txs), 3)
+    total_min = sum(_f(t["dauer_min"]) for t in txs if not t["running"])
+
+    # Zusammenfassung je Person
+    per = {}
+    for t in txs:
+        key = t["name"] or t["chip"]
+        p = per.setdefault(key, {"name": key, "count": 0, "kwh": 0.0, "min": 0.0})
+        p["count"] += 1
+        p["kwh"]   += _f(t["energie_kwh"])
+        p["min"]   += _f(t["dauer_min"])
+    per_person = sorted(per.values(), key=lambda p: -p["kwh"])
+
+    return render_template("wallbox_history.html",
+                           box=box, txs=list(reversed(txs)), ym=ym,
+                           period_label=monat_label(cur),
+                           prev_ym=prev_ym, next_ym=next_ym,
+                           months=get_months(24),
+                           total_kwh=total_kwh,
+                           avg_kw=avg_power_kw(sum(_f(t["energie_kwh"]) for t in txs if not t["running"]), total_min),
+                           per_person=per_person,
+                           username=session["username"])
 
 
 @app.route("/history")
