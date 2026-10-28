@@ -418,10 +418,16 @@ window.addEventListener('load', function() {
       facts.append(
         fact('bi-battery-charging', `${num(t.energy_kwh, 2)} kWh`, 'Seit Start geladen'),
         fact('bi-clock', dauer(t.dauer_min), `Seit ${t.start}`),
-        fact('bi-diagram-3', `${t.phases}-phasig · ${t.currents.map(c => num(c, 1)).join(' / ')} A`, 'Strom L1 / L2 / L3'),
       );
+      if (t.currents.some(c => c !== null))
+        facts.append(fact('bi-diagram-3', `${t.phases}-phasig · ${t.currents.map(c => num(c, 1)).join(' / ')} A`, 'Strom L1 / L2 / L3'));
       box.append(head, bar, facts);
-      if (t.updated) box.append(el('div', 'text-muted small mt-2', `Messwert von ${t.updated}`));
+      if (t.status === 'SuspendedEV' || t.status === 'SuspendedEVSE')
+        box.append(el('div', 'small mt-2 text-warning-emphasis',
+          t.status === 'SuspendedEV' ? 'Pausiert – Fahrzeug nimmt gerade keinen Strom ab' : 'Pausiert durch die Wallbox'));
+      box.append(el('div', 'text-muted small mt-2', t.updated
+        ? `Messwert von ${t.updated}`
+        : 'Die Wallbox hat für diesen Vorgang noch keine Messwerte gesendet.'));
       col.append(box); row.append(col);
     }
     body.append(row);

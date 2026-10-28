@@ -89,8 +89,17 @@
     if (c.live) {
       const l = c.live;
       const who = l.name || l.chip;
-      main.append(el('div', 'mt-1 fw-semibold text-primary',
-        `${num(l.power_kw, 1)} kW · ${num(l.energy_kwh, 2)} kWh · ${dauer(l.dauer_min)}${who ? ' · ' + who : ''}`));
+      const parts = [];
+      if (l.power_kw !== null) parts.push(`${num(l.power_kw, 1)} kW`);
+      if (l.energy_kwh !== null) parts.push(`${num(l.energy_kwh, 2)} kWh`);
+      parts.push(dauer(l.dauer_min));
+      if (who) parts.push(who);
+      const lv = el('div', 'mt-1 fw-semibold text-primary', parts.join(' · '));
+      main.append(lv);
+      if (!l.updated) main.append(el('div', 'text-muted', 'Noch keine Messwerte von der Wallbox'));
+    } else if (online && ['Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(c.status)) {
+      main.append(el('div', 'mt-1 text-muted',
+        'Kein laufender Ladevorgang in SteVe erfasst (Start ohne Autorisierung / freies Laden?)'));
     }
     if (c.error) {
       const e = el('div', 'mt-1 text-danger');

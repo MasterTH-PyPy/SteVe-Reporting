@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -497,6 +497,8 @@ def fetch_peak_power(tx_ids: list) -> dict:
 
 
 LIVE_STALE_MIN = 15   # Laufende Vorgänge ohne Messwert seit X min ausblenden (Hänger)
+# Anschluss-Status, bei denen ein offener Vorgang als laufend gilt
+LIVE_STATUSES = ("Charging", "SuspendedEV", "SuspendedEVSE", "Occupied", "Finishing")
 
 
 # ─────────────────────────────────────────────
@@ -636,7 +638,7 @@ def fetch_wallboxes() -> dict:
             continue
         for c in b["connectors"]:
             if str(c["nr"]) == str(lv["anschluss"]):
-                c["live"] = {k: lv[k] for k in ("power_kw", "energy_kwh", "dauer_min", "name", "chip", "phases")}
+                c["live"] = {k: lv[k] for k in ("power_kw", "energy_kwh", "dauer_min", "name", "chip", "phases", "updated")}
 
     # Online-Status: letzter Kontakt = jüngster Heartbeat oder Statuswechsel
     hb = heartbeat_interval_s()
@@ -671,24 +673,32 @@ def fetch_live_charging(chips: list = None) -> list:
             return []
         chip_sql = "AND ts.id_tag IN (" + ", ".join(f"'{_sanitize_chip(c)}'" for c in chips) + ")"
     if has_evse_schema():
-        join, col = "LEFT JOIN evse c ON ts.evse_pk = c.evse_pk", "c.evse_id"
+        t_conn, pk, col = "evse", "evse_pk", "evse_id"
     else:
-        join, col = "LEFT JOIN connector c ON ts.connector_pk = c.connector_pk", "c.connector_id"
+        t_conn, pk, col = "connector", "connector_pk", "connector_id"
+    # Je offener Vorgang: aktueller Anschluss-Status und ob es der jüngste
+    # Vorgang an diesem Anschluss ist (ältere offene Vorgänge = Hänger ohne Stop)
     rows = run_mysql(f"""
-        SELECT ts.transaction_pk, ts.id_tag, c.charge_box_id, {col},
-               ts.start_timestamp, ts.start_value
+        SELECT ts.transaction_pk, ts.id_tag, c.charge_box_id, c.{col},
+               ts.start_timestamp, ts.start_value,
+               (SELECT cs.status FROM connector_status cs
+                 WHERE cs.{pk} = ts.{pk}
+                 ORDER BY cs.status_timestamp DESC LIMIT 1)            AS cur_status,
+               (ts.transaction_pk = (SELECT MAX(x.transaction_pk) FROM transaction_start x
+                                      WHERE x.{pk} = ts.{pk}))         AS is_latest
         FROM transaction_start ts
         LEFT JOIN transaction_stop te ON ts.transaction_pk = te.transaction_pk
-        {join}
+        LEFT JOIN {t_conn} c ON ts.{pk} = c.{pk}
         WHERE te.transaction_pk IS NULL
-          AND ts.start_timestamp > UTC_TIMESTAMP() - INTERVAL 7 DAY
+          AND ts.start_timestamp > UTC_TIMESTAMP() - INTERVAL 30 DAY
           {chip_sql}
         ORDER BY ts.start_timestamp;""")
     txs = {}
     for r in rows:
-        if len(r) >= 6:
+        if len(r) >= 8:
             txs[r[0]] = {"id": r[0], "chip": r[1], "station": r[2], "anschluss": r[3],
-                         "start_time": r[4], "start_value": r[5]}
+                         "start_time": r[4], "start_value": r[5],
+                         "status": _nn(r[6]), "is_latest": r[7] == "1"}
     if not txs:
         return []
 
@@ -722,9 +732,15 @@ def fetch_live_charging(chips: list = None) -> list:
     out = []
     for tx in txs.values():
         m = tx.get("m", {})
-        ref = tx.get("last_ts") or tx["start_time"]
-        if str(ref)[:19] < stale:
-            continue   # Vorgang ohne Stop, aber seit langem keine Messwerte → Hänger
+        # Läuft, wenn der Anschluss laut Wallbox gerade belegt ist und das der jüngste
+        # Vorgang dort ist – unabhängig davon, wie oft die Wallbox Messwerte schickt.
+        # Ohne passenden Status gilt die alte Regel: keine Messwerte seit X min → Hänger.
+        if not tx["is_latest"]:
+            continue
+        if tx["status"] not in LIVE_STATUSES:
+            ref = tx.get("last_ts") or tx["start_time"]
+            if tx["status"] in ("Available", "Faulted", "Unavailable") or str(ref)[:19] < stale:
+                continue
         try:
             energy = (m[("Energy.Active.Import.Register", "")] - float(tx["start_value"])) / 1000
         except (KeyError, ValueError, TypeError):
@@ -747,6 +763,7 @@ def fetch_live_charging(chips: list = None) -> list:
             "currents":   [round(c, 1) if c is not None else None for c in currents],
             "phases":     sum(1 for c in currents if c is not None and c >= 1.0),
             "updated":    local_dt(tx.get("last_ts")) if tx.get("last_ts") else None,
+            "status":     tx["status"],
         })
     return out
 
