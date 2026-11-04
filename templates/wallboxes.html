@@ -90,7 +90,7 @@
       const l = c.live;
       const who = l.name || l.chip;
       const parts = [];
-      if (l.power_kw !== null) parts.push(`${num(l.power_kw, 1)} kW`);
+      if (l.power_kw !== null) parts.push(`${l.power_src && l.power_src !== 'meter' ? '≈ ' : ''}${num(l.power_kw, 1)} kW`);
       if (l.energy_kwh !== null) parts.push(`${num(l.energy_kwh, 2)} kWh`);
       parts.push(dauer(l.dauer_min));
       if (who) parts.push(who);

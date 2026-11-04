@@ -397,7 +397,10 @@ window.addEventListener('load', function() {
       who.append(el('div', 'fw-semibold', showName && t.name ? t.name : t.chip));
       who.append(el('div', 'text-muted small', `${t.station} · Anschluss ${t.anschluss}`));
       const pw = el('div', 'text-end');
-      pw.append(el('div', 'fs-3 fw-bold text-success lh-1', num(t.power_kw, 1)));
+      const pwv = el('div', 'fs-3 fw-bold text-success lh-1', (t.power_src && t.power_src !== 'meter' ? '≈ ' : '') + num(t.power_kw, 1));
+      if (t.power_src === 'energy') pwv.title = 'Berechnet aus dem Zählerstand-Anstieg der letzten Minuten (Wallbox meldet keine Leistung)';
+      else if (t.power_src === 'current') pwv.title = 'Geschätzt aus Ladestrom × Spannung (Wallbox meldet keine Leistung)';
+      pw.append(pwv);
       pw.append(el('div', 'text-muted small', t.offered_kw !== null ? `kW von max. ${num(t.offered_kw, 1)}` : 'kW'));
       head.append(who, pw);
 

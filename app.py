@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -497,6 +497,7 @@ def fetch_peak_power(tx_ids: list) -> dict:
 
 
 LIVE_STALE_MIN = 15   # Laufende Vorgänge ohne Messwert seit X min ausblenden (Hänger)
+LIVE_WINDOW_MIN = 20  # Messwerte dieses Zeitraums für die Live-Anzeige auswerten
 # Anschluss-Status, bei denen ein offener Vorgang als laufend gilt
 LIVE_STATUSES = ("Charging", "SuspendedEV", "SuspendedEVSE", "Occupied", "Finishing")
 
@@ -638,7 +639,7 @@ def fetch_wallboxes() -> dict:
             continue
         for c in b["connectors"]:
             if str(c["nr"]) == str(lv["anschluss"]):
-                c["live"] = {k: lv[k] for k in ("power_kw", "energy_kwh", "dauer_min", "name", "chip", "phases", "updated")}
+                c["live"] = {k: lv[k] for k in ("power_kw", "power_src", "energy_kwh", "dauer_min", "name", "chip", "phases", "updated")}
 
     # Online-Status: letzter Kontakt = jüngster Heartbeat oder Statuswechsel
     hb = heartbeat_interval_s()
@@ -659,6 +660,62 @@ def fetch_wallboxes() -> dict:
         b["power_kw"] = round(sum((c["live"] or {}).get("power_kw") or 0 for c in b["connectors"]), 2)
         out.append(b)
     return {"boxes": out, "heartbeat_s": hb, "offline_after_s": limit}
+
+_UNIT_FACTOR = {"kW": 1000.0, "kWh": 1000.0, "kVA": 1000.0, "kvar": 1000.0}
+
+def _meter_sample(measurand, phase, unit, value):
+    """
+    Ein Messwert → ((Messgröße, Phase), Wert in W/Wh/A/V) oder None.
+    Leere Messgröße = Energy.Active.Import.Register (OCPP-Default),
+    Phasen wie 'L1-N' werden auf 'L1' vereinheitlicht.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    measurand = measurand if measurand not in ("", "NULL") else "Energy.Active.Import.Register"
+    ph = phase if phase not in ("", "NULL") else ""
+    if ph[:2] in ("L1", "L2", "L3"):
+        ph = ph[:2]
+    elif ph == "N":
+        return None
+    return (measurand, ph), v * _UNIT_FACTOR.get(unit, 1.0)
+
+
+def _live_power(m: dict, energy_series: list, currents: list):
+    """
+    Aktuelle Ladeleistung in W und woher sie kommt:
+      'meter'  – von der Wallbox gemeldet (gesamt oder Summe der Phasen)
+      'energy' – aus dem Zählerstand-Anstieg der letzten Minuten berechnet
+      'current'– geschätzt aus Strom × Spannung
+    """
+    total = m.get(("Power.Active.Import", ""))
+    if total:
+        return total[0], "meter"
+    phases = [m.get(("Power.Active.Import", p)) for p in ("L1", "L2", "L3")]
+    if any(phases):
+        return sum(p[0] for p in phases if p), "meter"
+
+    # Zählerstand-Differenz: jüngster Wert gegen einen mind. 60 s älteren
+    if len(energy_series) >= 2:
+        def _ts(t):
+            return datetime.strptime(str(t)[:19], "%Y-%m-%d %H:%M:%S")
+        t1, e1 = energy_series[-1]
+        for t0, e0 in reversed(energy_series[:-1]):
+            dt = (_ts(t1) - _ts(t0)).total_seconds()
+            if dt >= 60:
+                if e1 >= e0:
+                    return (e1 - e0) * 3600 / dt, "energy"
+                break
+
+    if any(c is not None for c in currents):
+        volts = []
+        for p in ("L1", "L2", "L3"):
+            v = m.get(("Voltage", p))
+            volts.append(v[0] if v and 150 < v[0] < 300 else 230.0)
+        return sum((c or 0) * u for c, u in zip(currents, volts)), "current"
+    return None, None
+
 
 def fetch_live_charging(chips: list = None) -> list:
     """
@@ -703,29 +760,40 @@ def fetch_live_charging(chips: list = None) -> list:
         return []
 
     ids = _tx_ids(txs.keys())
+    # Alle Messwerte der letzten LIVE_WINDOW_MIN Minuten; Wallboxen schicken
+    # Leistung, Energie und Ströme oft in getrennten MeterValues-Nachrichten.
     vals = run_mysql(f"""
-        SELECT mv.transaction_pk, mv.measurand, COALESCE(mv.phase, ''), mv.unit,
-               mv.value, mv.value_timestamp
+        SELECT mv.transaction_pk, COALESCE(mv.measurand, ''), COALESCE(mv.phase, ''),
+               COALESCE(mv.unit, ''), mv.value, mv.value_timestamp
         FROM connector_meter_value mv
-        JOIN (SELECT transaction_pk, MAX(value_timestamp) AS last_ts
-              FROM connector_meter_value
-              WHERE transaction_pk IN ({ids})
-              GROUP BY transaction_pk) m
-          ON mv.transaction_pk = m.transaction_pk AND mv.value_timestamp = m.last_ts;""")
+        WHERE mv.transaction_pk IN ({ids})
+          AND mv.value_timestamp > UTC_TIMESTAMP() - INTERVAL {LIVE_WINDOW_MIN} MINUTE
+        ORDER BY mv.value_timestamp;""")
+    # Vorgänge ohne aktuelle Werte: wenigstens den letzten Zählerstand holen
+    missing = _tx_ids(set(txs) - {r[0] for r in vals if r})
+    if missing:
+        vals += run_mysql(f"""
+            SELECT mv.transaction_pk, COALESCE(mv.measurand, ''), COALESCE(mv.phase, ''),
+                   COALESCE(mv.unit, ''), mv.value, mv.value_timestamp
+            FROM connector_meter_value mv
+            JOIN (SELECT transaction_pk, MAX(value_timestamp) AS last_ts
+                  FROM connector_meter_value
+                  WHERE transaction_pk IN ({missing})
+                  GROUP BY transaction_pk) m
+              ON mv.transaction_pk = m.transaction_pk AND mv.value_timestamp = m.last_ts;""")
     for r in vals:
         if len(r) < 6 or r[0] not in txs:
             continue
         tx = txs[r[0]]
-        try:
-            v = float(r[4])
-        except ValueError:
+        sample = _meter_sample(r[1], r[2], r[3], r[4])
+        if not sample:
             continue
-        if r[3] == "kW":
-            v *= 1000
-        elif r[3] == "kWh":
-            v *= 1000
-        tx.setdefault("m", {})[(r[1], r[2])] = v
-        tx["last_ts"] = r[5]
+        key, v = sample
+        tx.setdefault("m", {})[key] = (v, r[5])          # letzter Wert je Messgröße/Phase
+        if key == ("Energy.Active.Import.Register", ""):
+            tx.setdefault("energy_series", []).append((r[5], v))
+        if not tx.get("last_ts") or r[5] > tx["last_ts"]:
+            tx["last_ts"] = r[5]
 
     stale = _utc(minutes=LIVE_STALE_MIN)
     notes = {c["id_tag"]: c["note"] for c in fetch_all_chips()}
@@ -741,13 +809,14 @@ def fetch_live_charging(chips: list = None) -> list:
             ref = tx.get("last_ts") or tx["start_time"]
             if tx["status"] in ("Available", "Faulted", "Unavailable") or str(ref)[:19] < stale:
                 continue
+        val = lambda k: (m.get(k) or (None,))[0]
         try:
-            energy = (m[("Energy.Active.Import.Register", "")] - float(tx["start_value"])) / 1000
-        except (KeyError, ValueError, TypeError):
+            energy = (val(("Energy.Active.Import.Register", "")) - float(tx["start_value"])) / 1000
+        except (ValueError, TypeError):
             energy = None
-        currents = [m.get(("Current.Import", p)) for p in ("L1", "L2", "L3")]
-        power_w  = m.get(("Power.Active.Import", ""))
-        offered  = m.get(("Power.Offered", ""))
+        currents = [val(("Current.Import", p)) for p in ("L1", "L2", "L3")]
+        power_w, power_src = _live_power(m, tx.get("energy_series", []), currents)
+        offered  = val(("Power.Offered", ""))
         start    = datetime.strptime(str(tx["start_time"])[:19], "%Y-%m-%d %H:%M:%S")
         out.append({
             "id":         tx["id"],
@@ -758,6 +827,7 @@ def fetch_live_charging(chips: list = None) -> list:
             "start":      local_dt(tx["start_time"]),
             "dauer_min":  int((datetime.utcnow() - start).total_seconds() // 60),
             "power_kw":   round(power_w / 1000, 2) if power_w is not None else None,
+            "power_src":  power_src,
             "offered_kw": round(offered / 1000, 1) if offered is not None else None,
             "energy_kwh": round(energy, 2) if energy is not None and energy >= 0 else None,
             "currents":   [round(c, 1) if c is not None else None for c in currents],
