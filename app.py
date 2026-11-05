@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -742,7 +742,8 @@ def fetch_live_charging(chips: list = None) -> list:
                  WHERE cs.{pk} = ts.{pk}
                  ORDER BY cs.status_timestamp DESC LIMIT 1)            AS cur_status,
                (ts.transaction_pk = (SELECT MAX(x.transaction_pk) FROM transaction_start x
-                                      WHERE x.{pk} = ts.{pk}))         AS is_latest
+                                      WHERE x.{pk} = ts.{pk}))         AS is_latest,
+               ts.{pk}
         FROM transaction_start ts
         LEFT JOIN transaction_stop te ON ts.transaction_pk = te.transaction_pk
         LEFT JOIN {t_conn} c ON ts.{pk} = c.{pk}
@@ -752,37 +753,49 @@ def fetch_live_charging(chips: list = None) -> list:
         ORDER BY ts.start_timestamp;""")
     txs = {}
     for r in rows:
-        if len(r) >= 8:
+        if len(r) >= 9:
             txs[r[0]] = {"id": r[0], "chip": r[1], "station": r[2], "anschluss": r[3],
                          "start_time": r[4], "start_value": r[5],
-                         "status": _nn(r[6]), "is_latest": r[7] == "1"}
+                         "status": _nn(r[6]), "is_latest": r[7] == "1", "conn_pk": r[8]}
     if not txs:
         return []
 
     ids = _tx_ids(txs.keys())
+    # Offener Vorgang je Anschluss – manche Wallboxen schicken MeterValues ohne
+    # transactionId, SteVe speichert sie dann mit transaction_pk = NULL.
+    by_conn = {tx["conn_pk"]: tx for tx in txs.values() if tx["is_latest"] and _nn(tx["conn_pk"])}
+    conn_ids = _tx_ids(by_conn.keys()) or "NULL"
+    cols = f"""mv.transaction_pk, COALESCE(mv.measurand, ''), COALESCE(mv.phase, ''),
+               COALESCE(mv.unit, ''), mv.value, mv.value_timestamp, mv.{pk}"""
     # Alle Messwerte der letzten LIVE_WINDOW_MIN Minuten; Wallboxen schicken
     # Leistung, Energie und Ströme oft in getrennten MeterValues-Nachrichten.
     vals = run_mysql(f"""
-        SELECT mv.transaction_pk, COALESCE(mv.measurand, ''), COALESCE(mv.phase, ''),
-               COALESCE(mv.unit, ''), mv.value, mv.value_timestamp
+        SELECT {cols}
         FROM connector_meter_value mv
-        WHERE mv.transaction_pk IN ({ids})
+        WHERE (mv.transaction_pk IN ({ids})
+               OR (mv.transaction_pk IS NULL AND mv.{pk} IN ({conn_ids})))
           AND mv.value_timestamp > UTC_TIMESTAMP() - INTERVAL {LIVE_WINDOW_MIN} MINUTE
         ORDER BY mv.value_timestamp;""")
     # Vorgänge ohne aktuelle Werte: wenigstens den letzten Zählerstand holen
     missing = _tx_ids(set(txs) - {r[0] for r in vals if r})
     if missing:
         vals += run_mysql(f"""
-            SELECT mv.transaction_pk, COALESCE(mv.measurand, ''), COALESCE(mv.phase, ''),
-                   COALESCE(mv.unit, ''), mv.value, mv.value_timestamp
+            SELECT {cols}
             FROM connector_meter_value mv
             JOIN (SELECT transaction_pk, MAX(value_timestamp) AS last_ts
                   FROM connector_meter_value
                   WHERE transaction_pk IN ({missing})
                   GROUP BY transaction_pk) m
               ON mv.transaction_pk = m.transaction_pk AND mv.value_timestamp = m.last_ts;""")
+    vals.sort(key=lambda r: r[5] if len(r) > 5 else "")
     for r in vals:
-        if len(r) < 6 or r[0] not in txs:
+        if len(r) < 7:
+            continue
+        if r[0] in txs:
+            pass
+        elif _nn(r[0]) is None and r[6] in by_conn and r[5] >= by_conn[r[6]]["start_time"]:
+            r[0] = by_conn[r[6]]["id"]          # Messwert ohne Transaktion → laufender Vorgang am Anschluss
+        else:
             continue
         tx = txs[r[0]]
         sample = _meter_sample(r[1], r[2], r[3], r[4])
