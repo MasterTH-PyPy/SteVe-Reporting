@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.6.3"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -1646,7 +1646,8 @@ def dashboard():
                            init_kwh=init_kwh,
                            init_count=init_count,
                            today_ym=today_ym,
-                           ranges=DASH_RANGES if is_admin else [])
+                           ranges=DASH_RANGES if is_admin else [],
+                           show_live=session.get("role") != "buchhaltung")
 
 
 @app.route("/api/stats")
@@ -1741,9 +1742,9 @@ def own_chips() -> list:
 
 
 @app.route("/api/live")
-@role_required("user", "userplus", "buchhaltung", "admin")
+@role_required("user", "userplus", "admin")
 def api_live():
-    """Laufende Ladevorgänge – Buchhaltung/Admin alle, sonst nur eigene Chips."""
+    """Laufende Ladevorgänge – Admin alle, sonst nur eigene Chips. Nicht für die Buchhaltung."""
     if view_role() == "buchhaltung":
         data = fetch_live_charging(None)
     else:

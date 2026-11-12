@@ -43,6 +43,8 @@
   </div>
 </div>
 
+{# Buchhaltung sieht keine laufenden Ladevorgänge #}
+{% if show_live %}
 {# ── Laufende Ladevorgänge (live) ───────────────────────── #}
 <div class="card border-0 shadow-sm mb-4" id="liveCard">
   <div class="card-header bg-transparent d-flex align-items-center justify-content-between">
@@ -58,6 +60,7 @@
     <span class="text-muted small">Lade …</span>
   </div>
 </div>
+{% endif %}
 
 {# ── Steuerleiste + Chart in einer Card ───────────────────── #}
 <div class="card border-0 shadow-sm mb-4">
@@ -485,6 +488,7 @@ window.addEventListener('load', function() {
   else loadStats('');
 });
 </script>
+{% if show_live %}
 <script>
 // ─── Live: laufende Ladevorgänge ────────────────────────────
 (() => {
@@ -572,4 +576,5 @@ window.addEventListener('load', function() {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 })();
 </script>
+{% endif %}
 {% endblock %}
