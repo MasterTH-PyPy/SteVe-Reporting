@@ -70,8 +70,8 @@
       <input type="hidden" name="note_filter" id="historyNoteFilter" value="Mitarbeiter"/>
       {% endif %}
 
-      {% if role == 'buchhaltung' %}
-      {# Umschalter: Statistik über einen Zeitraum ⇄ Auswertung eines Monats je Chip #}
+      {% if ranges %}
+      {# Umschalter (nur Admin): Statistik über einen Zeitraum ⇄ Auswertung eines Monats je Chip #}
       <div class="btn-group btn-group-sm mb-3" role="group" aria-label="Ansicht">
         <input type="radio" class="btn-check" name="dashMode" form="dashModeNoSubmit" id="modeStats" autocomplete="off" checked
                onchange="setMode('stats')">
@@ -90,7 +90,7 @@
 
         {% if role == 'buchhaltung' %}
         {# Kommentar-Filter #}
-        <div class="col-12 col-md-5">
+        <div class="col-12 {% if ranges %}col-md-5{% else %}col-md-4{% endif %}">
           <label class="form-label fw-semibold small mb-1">
             <i class="bi bi-funnel me-1 text-primary"></i>Kommentar-Filter
           </label>
@@ -108,28 +108,31 @@
           </div>
         </div>
 
-        {# Statistik: Zeitraum (Auswahl nur Admin, sonst fest 12 Monate) #}
+        {% endif %}
+
+        {% if ranges %}
+        {# Statistik: Zeitraum (nur Admin) #}
         <div class="col-12 col-md-4" data-mode="stats">
           <label class="form-label fw-semibold small mb-1" for="rangeSelect">
             <i class="bi bi-calendar-range me-1 text-primary"></i>Zeitraum
           </label>
-          <select class="form-select form-select-sm" id="rangeSelect" onchange="onRangeChange()"
-                  {% if not ranges %}disabled{% endif %}>
-            {% for key, label in (ranges or [('12', 'letzte 12 Monate')]) %}
+          <select class="form-select form-select-sm" id="rangeSelect" onchange="onRangeChange()">
+            {% for key, label in ranges %}
             <option value="{{ key }}">{{ label }}</option>
             {% endfor %}
           </select>
         </div>
         {% endif %}
 
-        {# Monat (Buchhaltung/Admin: nur in der Einzelchip-Auswertung) #}
-        <div class="col-12 {% if role == 'buchhaltung' %}col-md-4 d-none{% else %}col-md-8{% endif %}" data-mode="chip">
+        {# Monat (Admin: nur in der Einzelchip-Auswertung) #}
+        <div class="col-12 {% if ranges %}col-md-4 d-none{% elif role == 'buchhaltung' %}col-md-4{% else %}col-md-8{% endif %}"
+             {% if ranges %}data-mode="chip"{% endif %}>
           <label class="form-label fw-semibold small mb-1">
             <i class="bi bi-calendar3 me-1 text-primary"></i>Monat
           </label>
           <select name="month" class="form-select form-select-sm" id="monthSelect"
                   onchange="this.classList.remove('is-invalid');onMonthChange(this.value)">
-            {% if role != 'buchhaltung' %}<option value="">— letzte 12 Monate —</option>{% endif %}
+            {% if not ranges %}<option value="">— letzte 12 Monate —</option>{% endif %}
             {% for m in months %}
             <option value="{{ m.value }}"
               {% if role in ('user','userplus') and m.value == today_ym %}selected{% endif %}>
@@ -140,12 +143,15 @@
           <div class="invalid-feedback">Bitte wähle einen Monat aus.</div>
         </div>
 
-        {# Ladevorgänge des Monats öffnen (Buchhaltung/Admin: mit Chip-Auswahl) #}
-        <div class="col-12 col-md-auto ms-md-auto {% if role == 'buchhaltung' %}d-none{% endif %}" data-mode="chip">
+        {# Ladevorgänge des Monats öffnen – Benutzer und Admin (Einzelchip-Auswertung), nicht Buchhaltung #}
+        {% if ranges or role != 'buchhaltung' %}
+        <div class="col-12 col-md-auto ms-md-auto {% if ranges %}d-none{% endif %}"
+             {% if ranges %}data-mode="chip"{% endif %}>
           <button type="submit" class="btn btn-primary btn-sm">
             <i class="bi bi-search me-1"></i>Ladevorgänge anzeigen
           </button>
         </div>
+        {% endif %}
 
       </div>
     </form>
@@ -166,7 +172,8 @@
 
   {# Export-Button unter dem Chart – nur Buchhaltung #}
   {% if role == 'buchhaltung' %}
-  <div class="card-footer bg-transparent border-top-0 pt-0 pb-3 px-3 d-none" data-mode="chip">
+  <div class="card-footer bg-transparent border-top-0 pt-0 pb-3 px-3 {% if ranges %}d-none{% endif %}"
+       {% if ranges %}data-mode="chip"{% endif %}>
     <span class="d-block export-wrap locked" id="exportWrap" tabindex="0"
           data-bs-toggle="tooltip" data-bs-placement="top"
           data-bs-title="Export nur für abgeschlossene Monate möglich – bitte einen vergangenen Monat auswählen.">
@@ -205,7 +212,7 @@ const PALETTE = [
 ];
 
 let chart = null;
-const IS_BH = {{ 'true' if role == 'buchhaltung' else 'false' }};
+const HAS_MODES = {{ 'true' if ranges else 'false' }};   // Umschalter nur für den Admin
 let MODE = 'stats';                    // 'stats' = Statistik, 'chip' = Einzelchip-Auswertung
 let rangeLabel = 'letzte 12 Monate';
 
@@ -408,7 +415,7 @@ function onNoteFilterChange(val) {
   if (hidden) hidden.value = val;
   clearTimeout(_nfTimer);
   _nfTimer = setTimeout(() => {
-    loadStats(MODE === 'chip' ? document.getElementById('monthSelect').value : '');
+    loadStats(HAS_MODES && MODE === 'stats' ? '' : document.getElementById('monthSelect').value);
   }, 400);
 }
 {% endif %}
@@ -447,9 +454,10 @@ document.getElementById('exportBtn').addEventListener('click', function() {
 
 // ─── Formular-Validierung ────────────────────────────────────
 function validateMonth() {
-  {% if role == 'buchhaltung' %}
+  {% if ranges %}
   if (MODE !== 'chip') return false;
-  {% else %}
+  {% endif %}
+  {% if role != 'buchhaltung' %}
   const sel = document.getElementById('monthSelect');
   if (!sel.value) {
     sel.classList.add('is-invalid');
@@ -464,7 +472,7 @@ function validateMonth() {
 // ─── Initial laden ───────────────────────────────────────────
 window.addEventListener('load', function() {
   const sel = document.getElementById('monthSelect');
-  if (IS_BH) {
+  if (HAS_MODES) {
     // Einzelchip-Auswertung startet beim letzten abgeschlossenen Monat (Export möglich)
     if (sel.options.length > 1) sel.selectedIndex = 1;
     let saved = 'stats';
