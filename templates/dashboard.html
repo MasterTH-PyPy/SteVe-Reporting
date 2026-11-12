@@ -19,7 +19,7 @@
         </div>
         <div>
           <div class="text-muted small" id="statLabel1">
-            Verbrauch {{ range_label }}
+            Verbrauch letzte 12 Monate
           </div>
           <div class="fw-bold fs-4" id="statKwh">{{ init_kwh|de_num }} kWh</div>
         </div>
@@ -34,7 +34,7 @@
         </div>
         <div>
           <div class="text-muted small" id="statLabel2">
-            Ladevorgänge {{ range_label }}
+            Ladevorgänge letzte 12 Monate
           </div>
           <div class="fw-bold fs-4" id="statCount">{{ init_count|de_num(0) }}</div>
         </div>
@@ -70,11 +70,27 @@
       <input type="hidden" name="note_filter" id="historyNoteFilter" value="Mitarbeiter"/>
       {% endif %}
 
+      {% if role == 'buchhaltung' %}
+      {# Umschalter: Statistik über einen Zeitraum ⇄ Auswertung eines Monats je Chip #}
+      <div class="btn-group btn-group-sm mb-3" role="group" aria-label="Ansicht">
+        <input type="radio" class="btn-check" name="dashMode" form="dashModeNoSubmit" id="modeStats" autocomplete="off" checked
+               onchange="setMode('stats')">
+        <label class="btn btn-outline-primary" for="modeStats">
+          <i class="bi bi-bar-chart-line me-1"></i>Statistik
+        </label>
+        <input type="radio" class="btn-check" name="dashMode" form="dashModeNoSubmit" id="modeChip" autocomplete="off"
+               onchange="setMode('chip')">
+        <label class="btn btn-outline-primary" for="modeChip">
+          <i class="bi bi-credit-card-2-front me-1"></i>Einzelchip-Auswertung
+        </label>
+      </div>
+      {% endif %}
+
       <div class="row g-2 align-items-end">
 
         {% if role == 'buchhaltung' %}
         {# Kommentar-Filter #}
-        <div class="col-12 {% if ranges %}col-md-5{% else %}col-md-4{% endif %}">
+        <div class="col-12 col-md-5">
           <label class="form-label fw-semibold small mb-1">
             <i class="bi bi-funnel me-1 text-primary"></i>Kommentar-Filter
           </label>
@@ -91,30 +107,29 @@
             </button>
           </div>
         </div>
-        {% endif %}
 
-        {% if ranges %}
-        {# Zeitraum der Übersicht – nur Admin #}
-        <div class="col-12 col-md-3">
+        {# Statistik: Zeitraum (Auswahl nur Admin, sonst fest 12 Monate) #}
+        <div class="col-12 col-md-4" data-mode="stats">
           <label class="form-label fw-semibold small mb-1" for="rangeSelect">
             <i class="bi bi-calendar-range me-1 text-primary"></i>Zeitraum
           </label>
-          <select class="form-select form-select-sm" id="rangeSelect" onchange="onRangeChange(this.value)">
-            {% for key, label in ranges %}
-            <option value="{{ key }}" {% if key == range_key %}selected{% endif %}>{{ label }}</option>
+          <select class="form-select form-select-sm" id="rangeSelect" onchange="onRangeChange()"
+                  {% if not ranges %}disabled{% endif %}>
+            {% for key, label in (ranges or [('12', 'letzte 12 Monate')]) %}
+            <option value="{{ key }}">{{ label }}</option>
             {% endfor %}
           </select>
         </div>
         {% endif %}
 
-        {# Monat #}
-        <div class="col-12 {% if role == 'buchhaltung' %}col-md-4{% else %}col-md-8{% endif %}">
+        {# Monat (Buchhaltung/Admin: nur in der Einzelchip-Auswertung) #}
+        <div class="col-12 {% if role == 'buchhaltung' %}col-md-4 d-none{% else %}col-md-8{% endif %}" data-mode="chip">
           <label class="form-label fw-semibold small mb-1">
             <i class="bi bi-calendar3 me-1 text-primary"></i>Monat
           </label>
           <select name="month" class="form-select form-select-sm" id="monthSelect"
                   onchange="this.classList.remove('is-invalid');onMonthChange(this.value)">
-            <option value="">— {{ range_label }} —</option>
+            {% if role != 'buchhaltung' %}<option value="">— letzte 12 Monate —</option>{% endif %}
             {% for m in months %}
             <option value="{{ m.value }}"
               {% if role in ('user','userplus') and m.value == today_ym %}selected{% endif %}>
@@ -125,14 +140,12 @@
           <div class="invalid-feedback">Bitte wähle einen Monat aus.</div>
         </div>
 
-        {# Buttons – nur für user/userplus in der Steuerleiste #}
-        {% if role != 'buchhaltung' %}
-        <div class="col-12 col-md-auto ms-md-auto">
+        {# Ladevorgänge des Monats öffnen (Buchhaltung/Admin: mit Chip-Auswahl) #}
+        <div class="col-12 col-md-auto ms-md-auto {% if role == 'buchhaltung' %}d-none{% endif %}" data-mode="chip">
           <button type="submit" class="btn btn-primary btn-sm">
             <i class="bi bi-search me-1"></i>Ladevorgänge anzeigen
           </button>
         </div>
-        {% endif %}
 
       </div>
     </form>
@@ -141,7 +154,7 @@
   {# Chart-Header #}
   <div class="px-3 pt-3 pb-0 d-flex align-items-center justify-content-between">
     <span class="fw-semibold small text-muted" id="chartTitle">
-      {% if role == 'buchhaltung' %}Verbrauch [Mitarbeiter] – {{ range_label }}{% else %}Verbrauch {{ range_label }}{% endif %}
+      {% if role == 'buchhaltung' %}Verbrauch [Mitarbeiter] – letzte 12 Monate{% else %}Verbrauch letzte 12 Monate{% endif %}
     </span>
     <span class="spinner-border spinner-border-sm text-primary d-none" id="chartSpinner"></span>
   </div>
@@ -153,7 +166,7 @@
 
   {# Export-Button unter dem Chart – nur Buchhaltung #}
   {% if role == 'buchhaltung' %}
-  <div class="card-footer bg-transparent border-top-0 pt-0 pb-3 px-3">
+  <div class="card-footer bg-transparent border-top-0 pt-0 pb-3 px-3 d-none" data-mode="chip">
     <span class="d-block export-wrap locked" id="exportWrap" tabindex="0"
           data-bs-toggle="tooltip" data-bs-placement="top"
           data-bs-title="Export nur für abgeschlossene Monate möglich – bitte einen vergangenen Monat auswählen.">
@@ -192,17 +205,32 @@ const PALETTE = [
 ];
 
 let chart = null;
-const RANGE_KEY   = {{ range_key|tojson }};
-const RANGE_LABEL = {{ range_label|tojson }};
+const IS_BH = {{ 'true' if role == 'buchhaltung' else 'false' }};
+let MODE = 'stats';                    // 'stats' = Statistik, 'chip' = Einzelchip-Auswertung
+let rangeLabel = 'letzte 12 Monate';
 
-// Zeitraum wechseln (Admin): Seite mit neuem Zeitraum laden, Filter behalten
-function onRangeChange(key) {
-  const p = new URLSearchParams();
-  if (key !== '12') p.set('range', key);
-  const nf = document.getElementById('noteFilterInput');
-  if (nf) p.set('nf', nf.value);
-  location.href = location.pathname + (p.toString() ? '?' + p.toString() : '');
+const rangeKey = () => {
+  const el = document.getElementById('rangeSelect');
+  return el ? el.value : '12';
+};
+
+// ─── Umschalter Statistik ⇄ Einzelchip-Auswertung ────────────
+function setMode(mode, ym) {
+  MODE = mode;
+  document.getElementById(mode === 'chip' ? 'modeChip' : 'modeStats').checked = true;
+  document.querySelectorAll('[data-mode]').forEach(el =>
+    el.classList.toggle('d-none', el.dataset.mode !== mode));
+  try { localStorage.setItem('dashMode', mode); } catch (e) { /* ohne Speicher: Standardansicht */ }
+  if (mode === 'chip') {
+    const sel = document.getElementById('monthSelect');
+    if (ym) sel.value = ym;
+    onMonthChange(sel.value);
+  } else {
+    loadStats('');
+  }
 }
+
+function onRangeChange() { loadStats(''); }
 
 // ─── Gesamtwerte je Monat: kWh als Balken, Anzahl als Linie ──
 function initTotalsChart(d) {
@@ -226,9 +254,7 @@ function initTotalsChart(d) {
       interaction: { mode: 'index', intersect: false },
       onClick: (evt, items) => {          // Klick auf einen Monat → Tagesansicht
         if (!items.length) return;
-        const sel = document.getElementById('monthSelect');
-        sel.value = d.months[items[0].index];
-        if (sel.value) onMonthChange(sel.value);
+        setMode('chip', d.months[items[0].index]);
       },
       onHover: (evt, items) => { evt.native.target.style.cursor = items.length ? 'pointer' : 'default'; },
       plugins: {
@@ -334,7 +360,7 @@ function loadStats(ym) {
 
   const params = new URLSearchParams();
   if (ym) params.set('month', ym);
-  if (RANGE_KEY !== '12') params.set('range', RANGE_KEY);
+  if (!ym && rangeKey() !== '12') params.set('range', rangeKey());
   {% if role == 'buchhaltung' %}
   const nf = getNoteFilter();
   if (nf) params.set('note_filter', nf);
@@ -348,7 +374,9 @@ function loadStats(ym) {
       // Stat-Cards
       document.getElementById('statKwh').textContent  = deNum(d.total_kwh, 3) + ' kWh';
       document.getElementById('statCount').textContent = deNum(d.total_count, 0);
-      const period = ym ? monthLabel(ym) : RANGE_LABEL;
+      if (!ym) rangeLabel = d.range_label
+        || (document.getElementById('rangeSelect') || {selectedOptions: [{text: 'letzte 12 Monate'}]}).selectedOptions[0].text;
+      const period = ym ? monthLabel(ym) : rangeLabel;
       document.getElementById('statLabel1').textContent = 'Verbrauch ' + period;
       document.getElementById('statLabel2').textContent = 'Ladevorgänge ' + period;
       // Chart-Titel
@@ -356,13 +384,13 @@ function loadStats(ym) {
       const nfLabel = getNoteFilter() ? ` [${getNoteFilter()}]` : '';
       titleEl.textContent = ym
         ? 'Verbrauch' + nfLabel + ' – ' + monthLabel(ym) + ' (Tage)'
-        : 'Verbrauch' + nfLabel + ' – ' + RANGE_LABEL + (d.type === 'totals' ? ' (Summe je Monat)' : '');
+        : 'Verbrauch' + nfLabel + ' – ' + rangeLabel + (d.type === 'totals' ? ' (Summe je Monat)' : '');
       if (d.type === 'totals') initTotalsChart(d);
       else initChart('stacked', d.labels, d.datasets);
       {% else %}
       titleEl.textContent = ym
         ? 'Verbrauch – ' + monthLabel(ym) + ' (Tage)'
-        : 'Verbrauch ' + RANGE_LABEL;
+        : 'Verbrauch letzte 12 Monate';
       initChart('bar', d.labels, d.data);
       {% endif %}
     })
@@ -380,8 +408,7 @@ function onNoteFilterChange(val) {
   if (hidden) hidden.value = val;
   clearTimeout(_nfTimer);
   _nfTimer = setTimeout(() => {
-    const ym = document.getElementById('monthSelect').value;
-    loadStats(ym);
+    loadStats(MODE === 'chip' ? document.getElementById('monthSelect').value : '');
   }, 400);
 }
 {% endif %}
@@ -420,7 +447,9 @@ document.getElementById('exportBtn').addEventListener('click', function() {
 
 // ─── Formular-Validierung ────────────────────────────────────
 function validateMonth() {
-  {% if role != 'buchhaltung' %}
+  {% if role == 'buchhaltung' %}
+  if (MODE !== 'chip') return false;
+  {% else %}
   const sel = document.getElementById('monthSelect');
   if (!sel.value) {
     sel.classList.add('is-invalid');
@@ -434,16 +463,17 @@ function validateMonth() {
 
 // ─── Initial laden ───────────────────────────────────────────
 window.addEventListener('load', function() {
-  const keepNf = new URLSearchParams(location.search).get('nf');
-  const nfInput = document.getElementById('noteFilterInput');
-  if (keepNf !== null && nfInput) {
-    nfInput.value = keepNf;
-    const hidden = document.getElementById('historyNoteFilter');
-    if (hidden) hidden.value = keepNf;
-  }
   const sel = document.getElementById('monthSelect');
+  if (IS_BH) {
+    // Einzelchip-Auswertung startet beim letzten abgeschlossenen Monat (Export möglich)
+    if (sel.options.length > 1) sel.selectedIndex = 1;
+    let saved = 'stats';
+    try { saved = localStorage.getItem('dashMode') || 'stats'; } catch (e) { /* Standardansicht */ }
+    setMode(saved === 'chip' ? 'chip' : 'stats');
+    return;
+  }
   const initYm = sel ? sel.value : '';
-  if (initYm) onMonthChange(initYm);  // Export-Status setzen + Chart laden
+  if (initYm) onMonthChange(initYm);
   else loadStats('');
 });
 </script>

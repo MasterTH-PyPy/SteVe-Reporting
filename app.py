@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -1473,9 +1473,21 @@ DASH_RANGES = [("12", "letzte 12 Monate"), ("24", "letzte 24 Monate"),
 DASH_RANGE_MAX = 180   # Obergrenze für „gesamter Zeitraum“ (Monate)
 
 
+def months_since_first_tx() -> tuple:
+    """(Anzahl Monate seit dem ersten Ladevorgang inkl. laufendem, 'YYYY-MM' oder None)."""
+    tbl = "transaction_start" if STEVE_VERSION == "current" else "`transaction`"
+    rows = run_mysql(f"SELECT DATE_FORMAT(MIN(start_timestamp),'%Y-%m') FROM {tbl};")
+    first = _nn(rows[0][0]) if rows and rows[0] else None
+    if not first or not re.fullmatch(r"\d{4}-\d{2}", first):
+        return 12, None
+    today = date.today()
+    n = (today.year - int(first[:4])) * 12 + today.month - int(first[5:7]) + 1
+    return max(12, min(n, DASH_RANGE_MAX)), first
+
+
 def dash_range() -> tuple:
     """
-    Gewählter Dashboard-Zeitraum → (key, Anzahl Monate inkl. laufendem, Beschriftung).
+    Gewählter Statistik-Zeitraum → (key, Anzahl Monate inkl. laufendem, Beschriftung).
     Nur der Admin darf vom Standard (12 Monate) abweichen.
     """
     key = request.args.get("range", "12")
@@ -1483,15 +1495,7 @@ def dash_range() -> tuple:
         return "12", 12, "letzte 12 Monate"
     if key != "all":
         return key, int(key), dict(DASH_RANGES)[key]
-    # Gesamter Zeitraum: ab dem Monat des ersten Ladevorgangs
-    tbl = "transaction_start" if STEVE_VERSION == "current" else "`transaction`"
-    rows = run_mysql(f"SELECT DATE_FORMAT(MIN(start_timestamp),'%Y-%m') FROM {tbl};")
-    first = _nn(rows[0][0]) if rows and rows[0] else None
-    n = 12
-    if first and re.fullmatch(r"\d{4}-\d{2}", first):
-        today = date.today()
-        n = (today.year - int(first[:4])) * 12 + today.month - int(first[5:7]) + 1
-    n = max(12, min(n, DASH_RANGE_MAX))
+    n, first = months_since_first_tx()
     return "all", n, f"gesamter Zeitraum (seit {first[5:7]}/{first[:4]})" if first else "gesamter Zeitraum"
 
 
@@ -1617,17 +1621,19 @@ def change_password():
 @app.route("/dashboard")
 @role_required("user", "userplus", "buchhaltung", "admin")
 def dashboard():
-    role   = view_role()
-    range_key, n_months, range_label = dash_range()
-    months = get_months(n_months, include_current=True)
+    role     = view_role()
+    is_admin = session.get("role") == "admin"
+    # Monatsauswahl: Admin kann jeden Monat seit dem ersten Ladevorgang auswerten
+    n_select = months_since_first_tx()[0] if is_admin else 12
+    months   = get_months(n_select, include_current=True)
     all_chips_info = fetch_all_chips() if role == "buchhaltung" else []
 
-    # Statistik für die Stat-Cards (gewählter Zeitraum inkl. laufendem Monat)
+    # Statistik für die Stat-Cards (letzte 12 Monate inkl. laufendem Monat)
     if role == "buchhaltung":
         chips = [c["id_tag"] for c in all_chips_info]
     else:
         chips = own_chips()
-    init_stats = fetch_monthly_stats_for_chips(chips, months)
+    init_stats = fetch_monthly_stats_for_chips(chips, get_months(12, include_current=True))
     init_kwh   = round(sum(s["kwh"] for s in init_stats), 3)
     init_count = sum(s["count"] for s in init_stats)
 
@@ -1640,9 +1646,7 @@ def dashboard():
                            init_kwh=init_kwh,
                            init_count=init_count,
                            today_ym=today_ym,
-                           ranges=DASH_RANGES if session.get("role") == "admin" else [],
-                           range_key=range_key,
-                           range_label=range_label)
+                           ranges=DASH_RANGES if is_admin else [])
 
 
 @app.route("/api/stats")
@@ -1665,7 +1669,7 @@ def api_stats():
             total_kwh = round(sum(day_stats.get(d["value"], 0.0) for d in days), 3)
             total_cnt = sum(day_stats.get(d["value"] + "_count", 0) for d in days)
         else:
-            range_key, n_months, _ = dash_range()
+            range_key, n_months, range_label = dash_range()
             months = list(reversed(get_months(n_months, include_current=True)))
             if range_key != "12":
                 # Längerer Zeitraum: nur Gesamtwerte je Monat (kWh + Anzahl),
@@ -1680,6 +1684,7 @@ def api_stats():
                     "total_kwh":   round(sum(s["kwh"] for s in summary), 3),
                     "total_count": sum(s["count"] for s in summary),
                     "note_filter": note_filter,
+                    "range_label": range_label,
                 })
             # Monatsauflösung: gestapelter Balken pro Monat
             data = fetch_monthly_stats_by_note(months, note_filter)
