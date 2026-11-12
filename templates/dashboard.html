@@ -19,7 +19,7 @@
         </div>
         <div>
           <div class="text-muted small" id="statLabel1">
-            {% if role == 'buchhaltung' %}Verbrauch letzte 12 Monate{% else %}Verbrauch letzte 12 Monate{% endif %}
+            Verbrauch {{ range_label }}
           </div>
           <div class="fw-bold fs-4" id="statKwh">{{ init_kwh|de_num }} kWh</div>
         </div>
@@ -34,7 +34,7 @@
         </div>
         <div>
           <div class="text-muted small" id="statLabel2">
-            {% if role == 'buchhaltung' %}Ladevorgänge letzte 12 Monate{% else %}Ladevorgänge letzte 12 Monate{% endif %}
+            Ladevorgänge {{ range_label }}
           </div>
           <div class="fw-bold fs-4" id="statCount">{{ init_count|de_num(0) }}</div>
         </div>
@@ -74,7 +74,7 @@
 
         {% if role == 'buchhaltung' %}
         {# Kommentar-Filter #}
-        <div class="col-12 col-md-4">
+        <div class="col-12 {% if ranges %}col-md-5{% else %}col-md-4{% endif %}">
           <label class="form-label fw-semibold small mb-1">
             <i class="bi bi-funnel me-1 text-primary"></i>Kommentar-Filter
           </label>
@@ -93,6 +93,20 @@
         </div>
         {% endif %}
 
+        {% if ranges %}
+        {# Zeitraum der Übersicht – nur Admin #}
+        <div class="col-12 col-md-3">
+          <label class="form-label fw-semibold small mb-1" for="rangeSelect">
+            <i class="bi bi-calendar-range me-1 text-primary"></i>Zeitraum
+          </label>
+          <select class="form-select form-select-sm" id="rangeSelect" onchange="onRangeChange(this.value)">
+            {% for key, label in ranges %}
+            <option value="{{ key }}" {% if key == range_key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
+
         {# Monat #}
         <div class="col-12 {% if role == 'buchhaltung' %}col-md-4{% else %}col-md-8{% endif %}">
           <label class="form-label fw-semibold small mb-1">
@@ -100,7 +114,7 @@
           </label>
           <select name="month" class="form-select form-select-sm" id="monthSelect"
                   onchange="this.classList.remove('is-invalid');onMonthChange(this.value)">
-            <option value="">— letzte 12 Monate —</option>
+            <option value="">— {{ range_label }} —</option>
             {% for m in months %}
             <option value="{{ m.value }}"
               {% if role in ('user','userplus') and m.value == today_ym %}selected{% endif %}>
@@ -127,7 +141,7 @@
   {# Chart-Header #}
   <div class="px-3 pt-3 pb-0 d-flex align-items-center justify-content-between">
     <span class="fw-semibold small text-muted" id="chartTitle">
-      {% if role == 'buchhaltung' %}Verbrauch [Mitarbeiter] – letzte 12 Monate{% else %}Verbrauch letzte 12 Monate{% endif %}
+      {% if role == 'buchhaltung' %}Verbrauch [Mitarbeiter] – {{ range_label }}{% else %}Verbrauch {{ range_label }}{% endif %}
     </span>
     <span class="spinner-border spinner-border-sm text-primary d-none" id="chartSpinner"></span>
   </div>
@@ -178,6 +192,67 @@ const PALETTE = [
 ];
 
 let chart = null;
+const RANGE_KEY   = {{ range_key|tojson }};
+const RANGE_LABEL = {{ range_label|tojson }};
+
+// Zeitraum wechseln (Admin): Seite mit neuem Zeitraum laden, Filter behalten
+function onRangeChange(key) {
+  const p = new URLSearchParams();
+  if (key !== '12') p.set('range', key);
+  const nf = document.getElementById('noteFilterInput');
+  if (nf) p.set('nf', nf.value);
+  location.href = location.pathname + (p.toString() ? '?' + p.toString() : '');
+}
+
+// ─── Gesamtwerte je Monat: kWh als Balken, Anzahl als Linie ──
+function initTotalsChart(d) {
+  const ctx = document.getElementById('statsChart').getContext('2d');
+  if (chart) chart.destroy();
+  const dense = d.labels.length > 18;
+  chart = new Chart(ctx, {
+    data: {
+      labels: d.labels,
+      datasets: [
+        { type: 'bar', label: 'Energie (kWh)', data: d.data, yAxisID: 'y', order: 2,
+          backgroundColor: '#1a56dbBB', borderColor: '#1a56db', borderWidth: 1, borderRadius: 3 },
+        { type: 'line', label: 'Ladevorgänge', data: d.counts, yAxisID: 'y1', order: 1,
+          borderColor: '#f59e0b', backgroundColor: '#f59e0b', borderWidth: 2,
+          pointRadius: dense ? 2 : 3, tension: 0.25 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      onClick: (evt, items) => {          // Klick auf einen Monat → Tagesansicht
+        if (!items.length) return;
+        const sel = document.getElementById('monthSelect');
+        sel.value = d.months[items[0].index];
+        if (sel.value) onMonthChange(sel.value);
+      },
+      onHover: (evt, items) => { evt.native.target.style.cursor = items.length ? 'pointer' : 'default'; },
+      plugins: {
+        legend: { display: true, position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            title: items => monthLabel(d.months[items[0].dataIndex]),
+            label: c => c.dataset.yAxisID === 'y'
+              ? ` Energie: ${deNum(c.parsed.y, 1)} kWh`
+              : ` Ladevorgänge: ${deNum(c.parsed.y, 0)}`,
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false },
+             ticks: dense ? { maxRotation: 60, minRotation: 60, font: { size: 10 }, autoSkip: true } : {} },
+        y:  { beginAtZero: true, title: { display: true, text: 'kWh' },
+              ticks: { callback: v => deNum(v, 0) } },
+        y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false },
+              title: { display: true, text: 'Ladevorgänge' }, ticks: { precision: 0 } },
+      }
+    }
+  });
+}
 
 // ─── Chart initialisieren ───────────────────────────────────
 function initChart(type, labels, datasets) {
@@ -259,6 +334,7 @@ function loadStats(ym) {
 
   const params = new URLSearchParams();
   if (ym) params.set('month', ym);
+  if (RANGE_KEY !== '12') params.set('range', RANGE_KEY);
   {% if role == 'buchhaltung' %}
   const nf = getNoteFilter();
   if (nf) params.set('note_filter', nf);
@@ -272,7 +348,7 @@ function loadStats(ym) {
       // Stat-Cards
       document.getElementById('statKwh').textContent  = deNum(d.total_kwh, 3) + ' kWh';
       document.getElementById('statCount').textContent = deNum(d.total_count, 0);
-      const period = ym ? monthLabel(ym) : 'letzte 12 Monate';
+      const period = ym ? monthLabel(ym) : RANGE_LABEL;
       document.getElementById('statLabel1').textContent = 'Verbrauch ' + period;
       document.getElementById('statLabel2').textContent = 'Ladevorgänge ' + period;
       // Chart-Titel
@@ -280,12 +356,13 @@ function loadStats(ym) {
       const nfLabel = getNoteFilter() ? ` [${getNoteFilter()}]` : '';
       titleEl.textContent = ym
         ? 'Verbrauch' + nfLabel + ' – ' + monthLabel(ym) + ' (Tage)'
-        : 'Verbrauch' + nfLabel + ' – letzte 12 Monate';
-      initChart('stacked', d.labels, d.datasets);
+        : 'Verbrauch' + nfLabel + ' – ' + RANGE_LABEL + (d.type === 'totals' ? ' (Summe je Monat)' : '');
+      if (d.type === 'totals') initTotalsChart(d);
+      else initChart('stacked', d.labels, d.datasets);
       {% else %}
       titleEl.textContent = ym
         ? 'Verbrauch – ' + monthLabel(ym) + ' (Tage)'
-        : 'Verbrauch letzte 12 Monate';
+        : 'Verbrauch ' + RANGE_LABEL;
       initChart('bar', d.labels, d.data);
       {% endif %}
     })
@@ -357,6 +434,13 @@ function validateMonth() {
 
 // ─── Initial laden ───────────────────────────────────────────
 window.addEventListener('load', function() {
+  const keepNf = new URLSearchParams(location.search).get('nf');
+  const nfInput = document.getElementById('noteFilterInput');
+  if (keepNf !== null && nfInput) {
+    nfInput.value = keepNf;
+    const hidden = document.getElementById('historyNoteFilter');
+    if (hidden) hidden.value = keepNf;
+  }
   const sel = document.getElementById('monthSelect');
   const initYm = sel ? sel.value : '';
   if (initYm) onMonthChange(initYm);  // Export-Status setzen + Chart laden

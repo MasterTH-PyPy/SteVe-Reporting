@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.6.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -1467,6 +1467,34 @@ def get_months(n=12, include_current=True) -> list:
     return months
 
 
+# Auswählbare Zeiträume im Dashboard (nur Admin): Wert → Beschriftung
+DASH_RANGES = [("12", "letzte 12 Monate"), ("24", "letzte 24 Monate"),
+               ("36", "letzte 36 Monate"), ("all", "gesamter Zeitraum")]
+DASH_RANGE_MAX = 180   # Obergrenze für „gesamter Zeitraum“ (Monate)
+
+
+def dash_range() -> tuple:
+    """
+    Gewählter Dashboard-Zeitraum → (key, Anzahl Monate inkl. laufendem, Beschriftung).
+    Nur der Admin darf vom Standard (12 Monate) abweichen.
+    """
+    key = request.args.get("range", "12")
+    if session.get("role") != "admin" or key not in dict(DASH_RANGES) or key == "12":
+        return "12", 12, "letzte 12 Monate"
+    if key != "all":
+        return key, int(key), dict(DASH_RANGES)[key]
+    # Gesamter Zeitraum: ab dem Monat des ersten Ladevorgangs
+    tbl = "transaction_start" if STEVE_VERSION == "current" else "`transaction`"
+    rows = run_mysql(f"SELECT DATE_FORMAT(MIN(start_timestamp),'%Y-%m') FROM {tbl};")
+    first = _nn(rows[0][0]) if rows and rows[0] else None
+    n = 12
+    if first and re.fullmatch(r"\d{4}-\d{2}", first):
+        today = date.today()
+        n = (today.year - int(first[:4])) * 12 + today.month - int(first[5:7]) + 1
+    n = max(12, min(n, DASH_RANGE_MAX))
+    return "all", n, f"gesamter Zeitraum (seit {first[5:7]}/{first[:4]})" if first else "gesamter Zeitraum"
+
+
 def get_past_months(n=12) -> list:
     return get_months(n, include_current=False)
 
@@ -1590,28 +1618,18 @@ def change_password():
 @role_required("user", "userplus", "buchhaltung", "admin")
 def dashboard():
     role   = view_role()
-    # Aktueller Monat + 12 vergangene = 13 Einträge
-    months = get_months(12, include_current=True)
+    range_key, n_months, range_label = dash_range()
+    months = get_months(n_months, include_current=True)
     all_chips_info = fetch_all_chips() if role == "buchhaltung" else []
 
-    # Statistik für die Stat-Cards (letzte 12 abgeschlossene Monate)
+    # Statistik für die Stat-Cards (gewählter Zeitraum inkl. laufendem Monat)
     if role == "buchhaltung":
-        all_chips = [c["id_tag"] for c in all_chips_info]
-        stats_months = get_months(12, include_current=True)
-        init_stats   = fetch_monthly_stats_for_chips(all_chips, stats_months)
-        init_kwh     = round(sum(s["kwh"] for s in init_stats), 3)
-        init_count   = sum(s["count"] for s in init_stats)
+        chips = [c["id_tag"] for c in all_chips_info]
     else:
-        db         = get_db()
-        user_row   = db.execute("SELECT steve_user FROM web_users WHERE id=?",
-                                (session["user_id"],)).fetchone()
-        steve_user = user_row["steve_user"] if user_row else None
-        chips      = fetch_chips_for_note(steve_user) if steve_user else []
-        stats_months = get_months(12, include_current=True)  # inkl. laufender Monat
-        monthly    = fetch_monthly_stats_for_chips(chips, stats_months)
-        total_kwh  = sum(s["kwh"] for s in monthly)
-        total_cnt  = sum(s["count"] for s in monthly)
-        init_kwh, init_count = total_kwh, total_cnt
+        chips = own_chips()
+    init_stats = fetch_monthly_stats_for_chips(chips, months)
+    init_kwh   = round(sum(s["kwh"] for s in init_stats), 3)
+    init_count = sum(s["count"] for s in init_stats)
 
     today_ym = date.today().strftime("%Y-%m")
     return render_template("dashboard.html",
@@ -1621,7 +1639,10 @@ def dashboard():
                            all_chips_info=all_chips_info,
                            init_kwh=init_kwh,
                            init_count=init_count,
-                           today_ym=today_ym)
+                           today_ym=today_ym,
+                           ranges=DASH_RANGES if session.get("role") == "admin" else [],
+                           range_key=range_key,
+                           range_label=range_label)
 
 
 @app.route("/api/stats")
@@ -1644,8 +1665,23 @@ def api_stats():
             total_kwh = round(sum(day_stats.get(d["value"], 0.0) for d in days), 3)
             total_cnt = sum(day_stats.get(d["value"] + "_count", 0) for d in days)
         else:
+            range_key, n_months, _ = dash_range()
+            months = list(reversed(get_months(n_months, include_current=True)))
+            if range_key != "12":
+                # Längerer Zeitraum: nur Gesamtwerte je Monat (kWh + Anzahl),
+                # die Aufteilung nach Person wäre nicht mehr lesbar
+                summary = fetch_monthly_stats_for_chips(filtered_chips, months)
+                return jsonify({
+                    "type": "totals",
+                    "labels": [f"{m['value'][5:7]}/{m['value'][2:4]}" for m in months],
+                    "months": [m["value"] for m in months],
+                    "data":   [s["kwh"] for s in summary],
+                    "counts": [s["count"] for s in summary],
+                    "total_kwh":   round(sum(s["kwh"] for s in summary), 3),
+                    "total_count": sum(s["count"] for s in summary),
+                    "note_filter": note_filter,
+                })
             # Monatsauflösung: gestapelter Balken pro Monat
-            months = list(reversed(get_months(12, include_current=True)))
             data = fetch_monthly_stats_by_note(months, note_filter)
             summary = fetch_monthly_stats_for_chips(filtered_chips, months)
             total_kwh = round(sum(s["kwh"] for s in summary), 3)
