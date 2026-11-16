@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{{ tag.id_tag }} – Ladehistorie{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-end justify-content-between flex-wrap gap-2 mb-4">
+  <div>
+    <h3 class="fw-bold mb-1">
+      <i class="bi bi-credit-card-2-front me-2 text-primary"></i>Ladehistorie
+      <code class="fs-5 ms-1">{{ tag.id_tag }}</code>
+    </h3>
+    <p class="text-muted mb-0" style="white-space:pre-line">{{ tag.note.strip() or 'kein Kommentar' }}</p>
+  </div>
+  <a href="{{ url_for('ocpp_tags') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left me-1"></i>Zu den OCPP-Tags
+  </a>
+</div>
+
+{# ── Kennzahlen ─────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  {% for label, value, icon in [
+      ('Ladevorgänge', txs|length, 'bi-list-ul'),
+      ('Energie gesamt', (total_kwh|de_num(1)) ~ ' kWh', 'bi-lightning-charge'),
+      ('Ø Ladeleistung', (avg_kw|de_num(1)) ~ ' kW', 'bi-speedometer'),
+      ('Genutzte Wallboxen', stations|length, 'bi-ev-station')] %}
+  <div class="col-6 col-md-3">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-body py-3">
+        <div class="text-muted small"><i class="bi {{ icon }} me-1 text-primary"></i>{{ label }}</div>
+        <div class="fw-bold fs-4">{{ value }}</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if txs %}
+<div class="card border-0 shadow-sm">
+  <div class="card-header bg-transparent fw-semibold">
+    <i class="bi bi-list-ul me-1 text-primary"></i>Ladevorgänge
+    <span class="text-muted fw-normal small">(neueste zuerst – Klick auf eine Zeile zeigt den Verlauf)</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover table-sm mb-0 align-middle">
+        <thead class="table-dark">
+          <tr>
+            <th>Start</th>
+            <th>Ende</th>
+            <th>Wallbox</th>
+            <th class="text-center">Anschluss</th>
+            <th class="text-end">Dauer</th>
+            <th class="text-end">Energie (kWh)</th>
+            <th class="text-end" title="Durchschnittliche Ladeleistung = Energie ÷ Dauer">Ø kW</th>
+            <th class="text-end" title="Höchste von der Wallbox gemessene Leistung">Max. kW</th>
+            <th>Stopgrund</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tx in txs %}
+          <tr data-tx="{{ tx.id }}" {% if tx.running %}class="table-primary"{% endif %}>
+            <td class="text-nowrap small">{{ tx.start_time|de_dt }}</td>
+            <td class="text-nowrap small">
+              {% if tx.running %}
+                <span class="badge bg-primary"><i class="bi bi-lightning-charge-fill me-1"></i>lädt</span>
+              {% else %}{{ tx.stop_time|de_dt }}{% endif %}
+            </td>
+            <td>{{ tx.station }}</td>
+            <td class="text-center">{{ tx.anschluss }}</td>
+            <td class="text-end text-nowrap">
+              {% if tx.dauer_min not in (none, '', 'NULL') %}
+                {% set m = tx.dauer_min|float %}{{ (m // 60)|int }} h {{ '%02d'|format((m % 60)|int) }} min
+              {% else %}–{% endif %}
+            </td>
+            <td class="text-end fw-semibold">{{ tx.energie_kwh|de_num(2) }}</td>
+            <td class="text-end">{{ tx.leistung_kw|de_num(1) if not tx.running else '–' }}</td>
+            <td class="text-end">{{ tx.max_kw|de_num(1) }}</td>
+            <td class="small text-muted">{{ tx.stopgrund if tx.stopgrund not in (none, 'NULL') else '' }}</td>
+            <td class="text-end text-primary"><i class="bi bi-graph-up" aria-hidden="true"></i></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="table-light fw-bold">
+          <tr>
+            <td colspan="5" class="text-end">Gesamt:</td>
+            <td class="text-end">{{ total_kwh|de_num(2) }}</td>
+            <td class="text-end" title="Energie ÷ Ladedauer der abgeschlossenen Vorgänge">{{ avg_kw|de_num(1) }}</td>
+            <td colspan="3"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+<p class="text-muted small mt-3 mb-0">Zeiten in Ortszeit.</p>
+{% else %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+  Mit diesem Tag wurde noch nie geladen.
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% include "_tx_chart.html" %}
+{% endblock %}

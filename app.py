@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -2195,6 +2195,153 @@ def admin_user_reset_pw(uid):
 @role_required("admin")
 def ocpp_tags():
     return render_template("ocpp_tags.html", tags=fetch_ocpp_tags(), username=session["username"])
+
+
+CURVE_POINTS = 400   # Diagramm: so viele Stützstellen höchstens je Ladevorgang
+
+
+def fetch_tx_curve(tx_id: int):
+    """
+    Verlauf eines Ladevorgangs aus den SteVe-Messwerten: Leistung (kW) und geladene
+    Energie (kWh) über die Zeit, auf höchstens CURVE_POINTS Stützstellen verdichtet.
+    Rückgabe None, wenn es den Vorgang nicht gibt.
+    """
+    if STEVE_VERSION != "current":
+        return None
+    if has_evse_schema():
+        t_conn, pk, col = "evse", "evse_pk", "evse_id"
+    else:
+        t_conn, pk, col = "connector", "connector_pk", "connector_id"
+    head = run_mysql(f"""
+        SELECT ts.id_tag, c.charge_box_id, c.{col}, ts.{pk},
+               ts.start_timestamp, te.stop_timestamp, ts.start_value, te.stop_value,
+               UNIX_TIMESTAMP(ts.start_timestamp),
+               COALESCE(UNIX_TIMESTAMP(te.stop_timestamp), UNIX_TIMESTAMP()),
+               te.stop_reason
+        FROM transaction_start ts
+        LEFT JOIN transaction_stop te ON te.transaction_pk = ts.transaction_pk
+        LEFT JOIN {t_conn} c ON c.{pk} = ts.{pk}
+        WHERE ts.transaction_pk = {int(tx_id)}
+        ORDER BY te.event_timestamp DESC LIMIT 1;""")
+    if not head or len(head[0]) < 11:
+        return None
+    h = head[0]
+    running = _nn(h[5]) is None
+    try:
+        t0, t1 = float(h[8]), float(h[9])
+        start_wh = float(h[6])
+    except (TypeError, ValueError):
+        return None
+    duration = max(t1 - t0, 1)
+    bucket = max(1, int(-(-duration // CURVE_POINTS)))        # Sekunden je Stützstelle
+    conn_pk = h[3] if str(h[3]).isdigit() else "NULL"
+    # Messwerte des Vorgangs; dazu Werte ohne transactionId vom selben Anschluss im Zeitraum
+    rows = run_mysql(f"""
+        SELECT FLOOR(UNIX_TIMESTAMP(mv.value_timestamp) / {bucket}) * {bucket} AS t,
+               COALESCE(mv.measurand, ''), COALESCE(mv.phase, ''), COALESCE(mv.unit, ''),
+               AVG(CAST(mv.value AS DECIMAL(20,4))), MAX(CAST(mv.value AS DECIMAL(20,4))),
+               MAX(UNIX_TIMESTAMP(mv.value_timestamp))
+        FROM connector_meter_value mv
+        WHERE (mv.transaction_pk = {int(tx_id)}
+               OR (mv.transaction_pk IS NULL AND mv.{pk} = {conn_pk}
+                   AND mv.value_timestamp BETWEEN FROM_UNIXTIME({t0}) AND FROM_UNIXTIME({t1})))
+          AND COALESCE(mv.measurand, '') IN ('', 'Energy.Active.Import.Register', 'Power.Active.Import')
+          AND mv.value REGEXP '^-?[0-9]+([.][0-9]+)?$'
+        GROUP BY t, COALESCE(mv.measurand, ''), COALESCE(mv.phase, ''), COALESCE(mv.unit, '')
+        ORDER BY t;""")
+    buckets = {}
+    for r in rows:
+        if len(r) < 7:
+            continue
+        is_energy = r[1] in ("", "Energy.Active.Import.Register")
+        sample = _meter_sample(r[1], r[2], r[3], r[5] if is_energy else r[4])
+        if not sample:
+            continue
+        (measurand, phase), v = sample
+        b = buckets.setdefault(int(float(r[0])), {})
+        if is_energy:
+            if phase == "":
+                b["wh"], b["wh_t"] = v, float(r[6])     # Zählerstand mit seinem echten Zeitpunkt
+        elif phase == "":
+            b["p_total"] = v
+        else:
+            b["p_phases"] = b.get("p_phases", 0.0) + v
+
+    points, prev = [], None            # prev = (t, Wh) der letzten Stützstelle mit Zählerstand
+    for t in sorted(buckets):
+        b = buckets[t]
+        power = b.get("p_total", b.get("p_phases"))
+        wh = b.get("wh")
+        if power is None and wh is not None and prev and b["wh_t"] > prev[0] and wh >= prev[1]:
+            power = (wh - prev[1]) * 3600 / (b["wh_t"] - prev[0])   # aus dem Zählerstand berechnet
+        if wh is not None:
+            prev = (b["wh_t"], wh)
+        points.append({
+            "t": t * 1000,
+            "kw":  round(power / 1000, 2) if power is not None else None,
+            "kwh": round((wh - start_wh) / 1000, 3) if wh is not None and wh >= start_wh else None,
+        })
+
+    try:
+        energy = round((float(h[7]) - start_wh) / 1000, 3)
+    except (TypeError, ValueError):
+        energy = next((p["kwh"] for p in reversed(points) if p["kwh"] is not None), None)
+    kws = [p["kw"] for p in points if p["kw"] is not None]
+    minutes = round(duration / 60, 1)
+    return {
+        "id": int(tx_id), "chip": h[0], "station": _nn(h[1]) or "", "anschluss": _nn(h[2]) or "",
+        "start": local_dt(h[4]), "stop": None if running else local_dt(h[5]),
+        "running": running, "dauer_min": minutes,
+        "energy_kwh": energy,
+        "avg_kw": avg_power_kw(energy, minutes) if not running else None,
+        # wie in den Tabellen: höchster Einzelmesswert; sonst Maximum der Kurve
+        "max_kw": fetch_peak_power([tx_id]).get(str(tx_id), max(kws) if kws else None),
+        "stopgrund": _nn(h[10]) or "",
+        "bucket_s": bucket,
+        "points": points,
+    }
+
+
+@app.route("/api/tx/<int:tx_id>/curve")
+@role_required("admin")
+def api_tx_curve(tx_id):
+    """Verlauf (Leistung/Energie) eines Ladevorgangs für das Diagramm – nur Admin."""
+    curve = fetch_tx_curve(tx_id)
+    if curve is None:
+        return jsonify(error="Ladevorgang nicht gefunden."), 404
+    curve["name"] = {c["id_tag"]: c["note"] for c in fetch_all_chips()}.get(curve["chip"], "")
+    return jsonify(curve)
+
+
+@app.route("/admin/tags/<int:pk>")
+@role_required("admin")
+def ocpp_tag_history(pk):
+    """Alle Ladevorgänge eines Tags, neueste zuerst."""
+    tag = next((t for t in fetch_ocpp_tags() if t["pk"] == pk), None)
+    if not tag:
+        abort(404)
+    try:
+        txs = fetch_transactions([tag["id_tag"]], "2000-01-01 00:00:00", "2100-01-01 00:00:00")
+    except ValueError:
+        txs = []
+        flash("Die ID dieses Tags enthält Sonderzeichen – Ladevorgänge können nicht geladen werden.", "warning")
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    for tx in txs:
+        tx["running"] = _nn(tx.get("stop_time")) is None
+    done = [t for t in txs if not t["running"]]
+    total_kwh = round(sum(_f(t["energie_kwh"]) for t in done), 3)
+    return render_template("tag_history.html",
+                           tag=tag, txs=list(reversed(txs)),
+                           total_kwh=total_kwh,
+                           avg_kw=avg_power_kw(total_kwh, sum(_f(t["dauer_min"]) for t in done)),
+                           stations=sorted({t["station"] for t in txs if _nn(t["station"])}),
+                           username=session["username"])
 
 
 @app.route("/favicon.ico")

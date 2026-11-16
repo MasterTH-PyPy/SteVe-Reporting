@@ -108,7 +108,8 @@
 {# ── Einzelne Ladevorgänge ─────────────────────────────── #}
 <div class="card border-0 shadow-sm">
   <div class="card-header bg-transparent fw-semibold">
-    <i class="bi bi-list-ul me-1 text-primary"></i>Ladevorgänge <span class="text-muted fw-normal small">(neueste zuerst)</span>
+    <i class="bi bi-list-ul me-1 text-primary"></i>Ladevorgänge
+    <span class="text-muted fw-normal small">(neueste zuerst{% if session.role == 'admin' %} – Klick auf eine Zeile zeigt den Verlauf{% endif %})</span>
   </div>
   <div class="card-body p-0">
     <div class="table-responsive">
@@ -129,7 +130,7 @@
         </thead>
         <tbody>
           {% for tx in txs %}
-          <tr {% if tx.running %}class="table-primary"{% endif %}>
+          <tr {% if session.role == 'admin' %}data-tx="{{ tx.id }}"{% endif %} {% if tx.running %}class="table-primary"{% endif %}>
             <td class="text-nowrap small">{{ tx.start_time|de_dt }}</td>
             <td class="text-nowrap small">
               {% if tx.running %}
@@ -174,4 +175,8 @@
   In {{ period_label }} gab es an dieser Wallbox keine Ladevorgänge.
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if session.role == 'admin' %}{% include "_tx_chart.html" %}{% endif %}
 {% endblock %}

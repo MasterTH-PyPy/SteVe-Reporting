@@ -38,7 +38,7 @@
         {% endif %}
         {% if session.role == 'admin' %}
         <li class="nav-item">
-          <a class="nav-link {% if request.endpoint == 'ocpp_tags' %}active{% endif %}"
+          <a class="nav-link {% if request.endpoint in ('ocpp_tags', 'ocpp_tag_history') %}active{% endif %}"
              href="{{ url_for('ocpp_tags') }}">
             <i class="bi bi-tags me-1"></i>OCPP-Tags
           </a>

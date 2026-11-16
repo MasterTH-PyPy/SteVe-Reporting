@@ -5,7 +5,7 @@
 <div class="mb-4">
   <h3 class="fw-bold mb-1"><i class="bi bi-tags me-2 text-primary"></i>OCPP-Tags</h3>
   <p class="text-muted mb-0">
-    Suche im Kommentar („Additional Note“) – zeigt die ID des Tags. Geändert wird weiterhin in SteVe.
+Suche im Kommentar („Additional Note“) – zeigt die ID des Tags und seine Ladehistorie. Geändert wird weiterhin in SteVe.
   </p>
 </div>
 
@@ -32,6 +32,7 @@
             <th class="text-end">Ladevorgänge</th>
             <th>Zuletzt genutzt</th>
             <th>Status</th>
+            <th class="text-end">Ladehistorie</th>
           </tr>
         </thead>
         <tbody id="tagRows"></tbody>
@@ -48,6 +49,7 @@
 <script>
 (function () {
   const tags = {{ tags|tojson }};
+  const HIST_URL = "{{ url_for('ocpp_tag_history', pk=0) }}";      // …/tags/0
   const $ = id => document.getElementById(id);
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
@@ -113,7 +115,13 @@
       if (!t.blocked && !t.expired) tdStat.append(el('span', 'badge text-bg-success', 'aktiv'));
       if (t.expiry) tdStat.title = 'Gültig bis ' + t.expiry;
 
-      tr.append(tdId, tdNote, tdCnt, tdLast, tdStat);
+      const tdHist = el('td', 'text-end');
+      const a = el('a', 'btn btn-outline-primary btn-sm text-nowrap');
+      a.href = HIST_URL.replace(/0$/, t.pk);
+      a.append(el('i', 'bi bi-clock-history me-1'), document.createTextNode('anzeigen'));
+      tdHist.append(a);
+
+      tr.append(tdId, tdNote, tdCnt, tdLast, tdStat, tdHist);
       rows.append(tr);
     }
     $('tagEmpty').classList.toggle('d-none', shown > 0);

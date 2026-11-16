@@ -1,0 +1,156 @@
+{# Diagramm eines Ladevorgangs (nur Admin). Einbinden im Block "scripts";
+   Zeilen mit data-tx="<id>" öffnen per Klick oder Enter das Diagramm. #}
+<div class="modal fade" id="txModal" tabindex="-1" aria-labelledby="txModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title mb-0" id="txModalTitle">Ladevorgang</h5>
+          <div class="text-muted small" id="txModalSub"></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2 mb-3" id="txFacts"></div>
+        <div class="position-relative" style="height:340px">
+          <canvas id="txChart"></canvas>
+          <div class="position-absolute top-50 start-50 translate-middle text-center text-muted w-75 d-none" id="txMsg"></div>
+        </div>
+        <div class="text-muted small mt-2" id="txNote"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  tr[data-tx] { cursor: pointer; }
+  tr[data-tx]:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: -2px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  const URL_TPL = "{{ url_for('api_tx_curve', tx_id=0) }}";      // …/tx/0/curve
+  const $ = id => document.getElementById(id);
+  const modal = new bootstrap.Modal($('txModal'));
+  let chart = null, current = 0;
+
+  const num = (v, d) => (v === null || v === undefined) ? '–'
+    : Number(v).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const dauer = m => (m === null || m === undefined) ? '–'
+    : `${Math.floor(m / 60)} h ${String(Math.floor(m % 60)).padStart(2, '0')} min`;
+  const TZ = 'Europe/Berlin';                           // wie alle Zeiten im Reporting
+  const clock = ms => new Date(ms).toLocaleTimeString('de-DE', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
+  const stamp = ms => new Date(ms).toLocaleString('de-DE',
+    { timeZone: TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+  function fact(label, value) {
+    const col = document.createElement('div'); col.className = 'col-6 col-md';
+    const box = document.createElement('div'); box.className = 'border rounded px-3 py-2 h-100';
+    const l = document.createElement('div'); l.className = 'text-muted small'; l.textContent = label;
+    const v = document.createElement('div'); v.className = 'fw-semibold'; v.textContent = value;
+    box.append(l, v); col.append(box); return col;
+  }
+
+  function message(text) {
+    $('txMsg').textContent = text;
+    $('txMsg').classList.toggle('d-none', !text);
+    $('txChart').classList.toggle('invisible', !!text);
+  }
+
+  function draw(d) {
+    const power  = d.points.filter(p => p.kw  !== null).map(p => ({ x: p.t, y: p.kw }));
+    const energy = d.points.filter(p => p.kwh !== null).map(p => ({ x: p.t, y: p.kwh }));
+    if (chart) { chart.destroy(); chart = null; }
+    if (!power.length && !energy.length) {
+      message('Für diesen Ladevorgang liegen keine Messwerte vor – die Wallbox hat keine gesendet oder sie wurden bereits bereinigt.');
+      return;
+    }
+    message('');
+    const tMin = d.points[0].t, tMax = d.points[d.points.length - 1].t;
+    const longRun = (tMax - tMin) > 20 * 3600 * 1000;
+    // Achsenbeschriftung auf glatte Uhrzeiten legen (höchstens ~10 Marken)
+    const MIN = 60000;
+    const step = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440].map(m => m * MIN)
+      .find(s => (tMax - tMin) / s <= 10) || 1440 * MIN;
+    const datasets = [];
+    if (power.length) datasets.push({
+      label: 'Leistung (kW)', data: power, yAxisID: 'y',
+      borderColor: '#1a56db', backgroundColor: '#1a56db22', fill: true,
+      borderWidth: 2, pointRadius: 0, pointHitRadius: 8, stepped: false, tension: 0.15 });
+    if (energy.length) datasets.push({
+      label: 'Geladen (kWh)', data: energy, yAxisID: 'y1',
+      borderColor: '#f59e0b', backgroundColor: '#f59e0b',
+      borderWidth: 2, pointRadius: 0, pointHitRadius: 8, tension: 0.15 });
+    chart = new Chart($('txChart').getContext('2d'), {
+      type: 'line',
+      data: { datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: { callbacks: {
+            title: items => stamp(items[0].parsed.x) + ' Uhr',
+            label: c => c.dataset.yAxisID === 'y'
+              ? ` Leistung: ${num(c.parsed.y, 1)} kW` : ` Geladen: ${num(c.parsed.y, 2)} kWh`,
+          } },
+        },
+        scales: {
+          x: { type: 'linear', min: tMin, max: Math.max(tMax, tMin + MIN), grid: { display: false },
+               afterBuildTicks: axis => {
+                 const ticks = [];
+                 for (let v = Math.ceil(tMin / step) * step; v <= tMax; v += step) ticks.push({ value: v });
+                 if (ticks.length) axis.ticks = ticks;
+               },
+               ticks: { callback: v => longRun ? stamp(v) : clock(v) } },
+          y:  { beginAtZero: true, display: power.length > 0, title: { display: true, text: 'kW' },
+                ticks: { callback: v => num(v, 0) } },
+          y1: { beginAtZero: true, display: energy.length > 0, position: 'right',
+                grid: { drawOnChartArea: power.length === 0 },
+                title: { display: true, text: 'kWh' }, ticks: { callback: v => num(v, 0) } },
+        },
+      },
+    });
+  }
+
+  async function openTxChart(id) {
+    current = id;
+    $('txModalTitle').textContent = 'Ladevorgang';
+    $('txModalSub').textContent = '';
+    $('txFacts').replaceChildren();
+    $('txNote').textContent = '';
+    if (chart) { chart.destroy(); chart = null; }
+    message('Lade Messwerte …');
+    modal.show();
+    try {
+      const r = await fetch(URL_TPL.replace('/0/', `/${id}/`), { credentials: 'same-origin' });
+      if (current !== id) return;                       // inzwischen ein anderer Vorgang geöffnet
+      if (!r.ok) { message(r.status === 404 ? 'Ladevorgang nicht gefunden.' : 'Messwerte konnten nicht geladen werden.'); return; }
+      const d = await r.json();
+      $('txModalTitle').textContent = `${d.station}${d.anschluss ? ' · Anschluss ' + d.anschluss : ''}`;
+      $('txModalSub').textContent = [d.name, d.chip].filter(Boolean).join(' · ');
+      $('txFacts').append(
+        fact('Start', d.start),
+        fact('Ende', d.running ? 'lädt noch' : d.stop),
+        fact('Dauer', dauer(d.dauer_min)),
+        fact('Energie', `${num(d.energy_kwh, 2)} kWh`),
+        fact('Ø Leistung', d.avg_kw === null ? '–' : `${num(d.avg_kw, 1)} kW`),
+        fact('Max. Leistung', d.max_kw === null ? '–' : `${num(d.max_kw, 1)} kW`),
+      );
+      draw(d);
+      if (d.points.length && d.bucket_s > 1)
+        $('txNote').textContent = `Messwerte zu Mittelwerten über je ${d.bucket_s >= 120 ? Math.round(d.bucket_s / 60) + ' min' : d.bucket_s + ' s'} zusammengefasst.`;
+    } catch (e) {
+      if (current === id) message('Server nicht erreichbar.');
+    }
+  }
+  window.openTxChart = openTxChart;
+
+  document.querySelectorAll('tr[data-tx]').forEach(tr => {
+    tr.tabIndex = 0;
+    tr.title = 'Verlauf als Diagramm anzeigen';
+    tr.addEventListener('click', () => openTxChart(tr.dataset.tx));
+    tr.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openTxChart(tr.dataset.tx); } });
+  });
+})();
+</script>
