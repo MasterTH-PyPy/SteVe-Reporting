@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -2303,11 +2303,15 @@ def fetch_tx_curve(tx_id: int):
 
 
 @app.route("/api/tx/<int:tx_id>/curve")
-@role_required("admin")
+@role_required("user", "userplus", "admin")
 def api_tx_curve(tx_id):
-    """Verlauf (Leistung/Energie) eines Ladevorgangs für das Diagramm – nur Admin."""
+    """
+    Verlauf (Leistung/Energie) eines Ladevorgangs für das Diagramm.
+    Admin: jeder Vorgang. Benutzer: nur Vorgänge mit eigenen Chips. Nicht für die Buchhaltung.
+    """
     curve = fetch_tx_curve(tx_id)
-    if curve is None:
+    if curve is None or (session.get("role") != "admin" and curve["chip"] not in own_chips()):
+        # fremde Vorgänge wie nicht vorhandene behandeln
         return jsonify(error="Ladevorgang nicht gefunden."), 404
     curve["name"] = {c["id_tag"]: c["note"] for c in fetch_all_chips()}.get(curve["chip"], "")
     return jsonify(curve)

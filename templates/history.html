@@ -68,6 +68,9 @@
 
 {# Tabelle #}
 {% if transactions %}
+{% if session.role != 'buchhaltung' %}
+<p class="text-muted small mb-2"><i class="bi bi-graph-up me-1"></i>Klick auf einen Ladevorgang zeigt den Verlauf als Diagramm.</p>
+{% endif %}
 <div class="card border-0 shadow-sm">
   <div class="card-body p-0">
     <div class="table-responsive">
@@ -89,7 +92,7 @@
         </thead>
         <tbody>
           {% for tx in transactions %}
-          <tr>
+          <tr {% if session.role != 'buchhaltung' %}data-tx="{{ tx.id }}"{% endif %}>
             <td><code class="small">{{ tx.chip }}</code></td>
             {% if role == 'buchhaltung' %}<td>{{ tx.benutzer }}</td>{% endif %}
             <td>{{ tx.station }}</td>
@@ -126,4 +129,9 @@
   Keine Ladevorgänge im gewählten Zeitraum gefunden.
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+{# Verlaufsdiagramm: Benutzer (eigene Ladevorgänge) und Admin, nicht Buchhaltung #}
+{% if session.role != 'buchhaltung' and transactions %}{% include "_tx_chart.html" %}{% endif %}
 {% endblock %}
