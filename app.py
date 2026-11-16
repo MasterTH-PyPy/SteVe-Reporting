@@ -49,7 +49,7 @@ DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.6.3"
+APP_VERSION = "1.7.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -283,6 +283,46 @@ def run_mysql(sql: str) -> list:
             continue
         rows.append(line.split("\t"))
     return rows
+
+
+def _hex_raw(h: str) -> str:
+    """HEX-Spalte → Text, unverändert (inkl. Zeilenumbrüchen)."""
+    if not h or h == "NULL":
+        return ""
+    try:
+        return bytes.fromhex(h).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def fetch_ocpp_tags() -> list:
+    """Alle OCPP-Tags aus SteVe mit Kommentar, Status und Nutzung – für die Tag-Suche."""
+    tbl = "transaction_start" if STEVE_VERSION == "current" else "`transaction`"
+    rows = run_mysql(f"""
+        SELECT t.ocpp_tag_pk, t.id_tag, HEX(COALESCE(t.parent_id_tag, '')),
+               HEX(COALESCE(t.note, '')), t.expiry_date, t.max_active_transaction_count,
+               u.cnt, u.last_start, (t.expiry_date IS NOT NULL AND t.expiry_date < UTC_TIMESTAMP())
+        FROM ocpp_tag t
+        LEFT JOIN (SELECT id_tag, COUNT(*) AS cnt, MAX(start_timestamp) AS last_start
+                   FROM {tbl} GROUP BY id_tag) u ON u.id_tag = t.id_tag
+        ORDER BY t.id_tag;""")
+    tags = []
+    for r in rows:
+        if len(r) < 9:
+            continue
+        raw = _hex_raw(r[3])
+        tags.append({
+            "pk":       int(r[0]),
+            "id_tag":   r[1],
+            "parent":   _hex_raw(r[2]),
+            "note":     raw,                      # Original inkl. Zeilenumbrüchen
+            "expiry":   local_dt(r[4]) if _nn(r[4]) else "",
+            "expired":  r[8] == "1",
+            "blocked":  r[5] == "0",
+            "tx_count": int(r[6]) if _nn(r[6]) else 0,
+            "last_use": local_dt(r[7]) if _nn(r[7]) else "",
+        })
+    return tags
 
 
 _EVSE_SCHEMA = None
@@ -2146,6 +2186,16 @@ def admin_user_reset_pw(uid):
 # ─────────────────────────────────────────────
 # Error Handler
 # ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# Admin: OCPP-Tags – nach dem Kommentar („Additional Note“) suchen, ID anzeigen
+# ─────────────────────────────────────────────
+
+@app.route("/admin/tags")
+@role_required("admin")
+def ocpp_tags():
+    return render_template("ocpp_tags.html", tags=fetch_ocpp_tags(), username=session["username"])
+
 
 @app.route("/favicon.ico")
 def favicon():

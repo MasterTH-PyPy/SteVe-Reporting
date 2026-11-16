@@ -38,6 +38,12 @@
         {% endif %}
         {% if session.role == 'admin' %}
         <li class="nav-item">
+          <a class="nav-link {% if request.endpoint == 'ocpp_tags' %}active{% endif %}"
+             href="{{ url_for('ocpp_tags') }}">
+            <i class="bi bi-tags me-1"></i>OCPP-Tags
+          </a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link {% if request.endpoint and 'admin' in (request.endpoint or '') %}active{% endif %}"
              href="{{ url_for('admin_users') }}">
             <i class="bi bi-people me-1"></i>Benutzerverwaltung
