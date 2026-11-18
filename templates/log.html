@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block title %}Log – SteVe{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-end justify-content-between flex-wrap gap-2 mb-3">
+  <div>
+    <h3 class="fw-bold mb-1"><i class="bi bi-journal-text me-2 text-primary"></i>Log</h3>
+    <p class="text-muted mb-0">OCPP-Meldungen aus SteVe – zum Anlernen neuer Tags und zur Fehlersuche.</p>
+  </div>
+  <div class="text-muted small">Container: <code>{{ container }}</code></div>
+</div>
+
+{# ── Steuerleiste ───────────────────────────────────────── #}
+<div class="card border-0 shadow-sm mb-3">
+  <div class="card-body py-3">
+    <div class="d-flex flex-wrap align-items-end gap-3">
+      <div class="btn-group btn-group-sm" role="group" aria-label="Ansicht">
+        <input type="radio" class="btn-check" name="logMode" id="modeUnknown" autocomplete="off" checked>
+        <label class="btn btn-outline-primary" for="modeUnknown">
+          <i class="bi bi-question-circle me-1"></i>Unbekannte Tags
+        </label>
+        <input type="radio" class="btn-check" name="logMode" id="modeRaw" autocomplete="off">
+        <label class="btn btn-outline-primary" for="modeRaw">
+          <i class="bi bi-list-ul me-1"></i>Ganzes Log
+        </label>
+      </div>
+
+      <div class="dropdown">
+        <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+          <i class="bi bi-ev-station me-1"></i><span id="wbBtnLabel">Alle Wallboxen</span>
+        </button>
+        <div class="dropdown-menu p-2" style="min-width:230px" id="wbMenu">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="wbAll" checked>
+            <label class="form-check-label fw-semibold" for="wbAll">Alle Wallboxen</label>
+          </div>
+          <hr class="my-2">
+          <div id="wbList"></div>
+        </div>
+      </div>
+
+      <div data-mode="raw" class="d-none">
+        <div class="input-group input-group-sm" style="width:230px">
+          <span class="input-group-text"><i class="bi bi-search"></i></span>
+          <input type="search" class="form-control" id="logSearch" placeholder="im Text suchen …" autocomplete="off">
+        </div>
+      </div>
+      <div data-mode="raw" class="d-none">
+        <select class="form-select form-select-sm" id="levelFilter" style="width:auto"
+                aria-label="Mindest-Loglevel">
+          <option value="all">alle Level</option>
+          <option value="warn">nur Warnungen/Fehler</option>
+          <option value="error">nur Fehler</option>
+        </select>
+      </div>
+
+      <div class="ms-auto d-flex align-items-end gap-3">
+        <div>
+          <label class="form-label small text-muted mb-0 me-1" for="lineCount">Zeilen</label>
+          <select class="form-select form-select-sm d-inline-block w-auto" id="lineCount">
+            <option value="200">200</option>
+            <option value="500" selected>500</option>
+            <option value="1000">1000</option>
+            <option value="2000">2000</option>
+          </select>
+        </div>
+        <div class="form-check form-switch mb-1">
+          <input class="form-check-input" type="checkbox" role="switch" id="autoRefresh" checked>
+          <label class="form-check-label small" for="autoRefresh">Auto</label>
+        </div>
+        <button class="btn btn-outline-primary btn-sm" id="refreshBtn" type="button">
+          <span class="spinner-border spinner-border-sm d-none" id="refreshSpin"></span>
+          <i class="bi bi-arrow-clockwise" id="refreshIcon"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="alert alert-warning d-none" id="logError" role="alert"></div>
+
+{# ── Unbekannte Tags ────────────────────────────────────── #}
+<div data-mode="unknown">
+  <div class="card border-0 shadow-sm">
+    <div class="card-header bg-transparent fw-semibold d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-question-circle me-1 text-primary"></i>Unbekannte Tags
+        <span class="text-muted fw-normal small">(in SteVe noch nicht angelegt)</span></span>
+      <span class="text-muted small" id="unknownCount"></span>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-dark">
+            <tr>
+              <th>Tag-ID</th>
+              <th class="text-end">Versuche</th>
+              <th>Zuletzt</th>
+              <th>Wallbox(en)</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="unknownRows"></tbody>
+        </table>
+      </div>
+      <div class="text-center text-muted py-5 d-none" id="unknownEmpty">
+        <i class="bi bi-check2-circle fs-1 d-block mb-2 text-success"></i>
+        Keine unbekannten Tags im geladenen Log-Ausschnitt.
+      </div>
+    </div>
+  </div>
+  <p class="text-muted small mt-2 mb-0">
+    Tipp: Tag-ID kopieren und in SteVe unter <em>Data Management → OCPP Tags → Add</em> anlegen.
+    Nach dem Anlegen verschwindet der Eintrag hier beim nächsten Aktualisieren.
+  </p>
+</div>
+
+{# ── Ganzes Log ─────────────────────────────────────────── #}
+<div data-mode="raw" class="d-none">
+  <div class="card border-0 shadow-sm">
+    <div class="card-header bg-transparent fw-semibold d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-list-ul me-1 text-primary"></i>Log <span class="text-muted fw-normal small">(neueste zuerst)</span></span>
+      <span class="text-muted small" id="rawCount"></span>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle mb-0" style="font-size:.85rem">
+          <thead class="table-dark">
+            <tr>
+              <th style="width:130px">Zeit</th>
+              <th style="width:70px">Level</th>
+              <th style="width:120px">Wallbox</th>
+              <th>Meldung</th>
+            </tr>
+          </thead>
+          <tbody id="rawRows" class="font-monospace"></tbody>
+        </table>
+      </div>
+      <div class="text-center text-muted py-5 d-none" id="rawEmpty">
+        <i class="bi bi-inbox fs-1 d-block mb-2"></i>Keine Zeilen für diesen Filter.
+      </div>
+    </div>
+  </div>
+  <p class="text-muted small mt-2 mb-0" id="truncNote"></p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const API = "{{ url_for('api_log') }}";
+  const $ = id => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+  const norm = s => (s || '').toLowerCase();
+
+  let data = { wallboxes: [], unknown: [], events: [], truncated: false };
+  let mode = 'unknown';
+  let selected = null;              // Set gewählter Wallboxen; null = alle
+  let timer = null, busy = false;
+
+  const LEVEL_CLASS = { ERROR: 'text-bg-danger', WARN: 'text-bg-warning',
+                        INFO: 'text-bg-secondary', DEBUG: 'text-bg-light text-dark border',
+                        TRACE: 'text-bg-light text-dark border' };
+
+  function copyBtn(value) {
+    const b = el('button', 'btn btn-link btn-sm text-muted p-0 ms-2');
+    b.type = 'button'; b.title = 'ID kopieren'; b.setAttribute('aria-label', 'ID kopieren');
+    const i = el('i', 'bi bi-copy'); b.append(i);
+    b.addEventListener('click', ev => {
+      ev.stopPropagation();
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(value).then(() => {
+        i.className = 'bi bi-check-lg text-success';
+        setTimeout(() => { i.className = 'bi bi-copy'; }, 1500);
+      }).catch(() => {});
+    });
+    return b;
+  }
+
+  function highlight(parent, text, q) {
+    const i = q ? norm(text).indexOf(q) : -1;
+    if (i < 0) { parent.append(document.createTextNode(text)); return; }
+    parent.append(document.createTextNode(text.slice(0, i)),
+                  el('mark', 'px-0', text.slice(i, i + q.length)),
+                  document.createTextNode(text.slice(i + q.length)));
+  }
+
+  // ── Wallbox-Filter ──────────────────────────────────────
+  function wbMatch(cb) {
+    if (!selected) return true;          // alle
+    return selected.has(cb);             // Zeilen ohne Wallbox nur sichtbar, wenn "alle"
+  }
+
+  function buildWbList() {
+    const list = $('wbList'); list.replaceChildren();
+    for (const wb of data.wallboxes) {
+      const id = 'wb_' + wb.replace(/[^a-z0-9]/gi, '_');
+      const wrap = el('div', 'form-check');
+      const inp = el('input', 'form-check-input'); inp.type = 'checkbox'; inp.id = id; inp.value = wb;
+      inp.checked = !selected || selected.has(wb);
+      inp.addEventListener('change', onWbChange);
+      const lab = el('label', 'form-check-label'); lab.htmlFor = id; lab.textContent = wb;
+      wrap.append(inp, lab); list.append(wrap);
+    }
+    syncWbLabel();
+  }
+
+  function onWbChange() {
+    const boxes = [...document.querySelectorAll('#wbList input')];
+    const checked = boxes.filter(b => b.checked).map(b => b.value);
+    $('wbAll').checked = checked.length === boxes.length;
+    selected = (checked.length === boxes.length) ? null : new Set(checked);
+    syncWbLabel();
+    render();
+  }
+
+  $('wbAll').addEventListener('change', () => {
+    const on = $('wbAll').checked;
+    document.querySelectorAll('#wbList input').forEach(b => { b.checked = on; });
+    selected = on ? null : new Set();
+    syncWbLabel();
+    render();
+  });
+
+  function syncWbLabel() {
+    if (!selected) { $('wbBtnLabel').textContent = 'Alle Wallboxen'; return; }
+    if (selected.size === 0) { $('wbBtnLabel').textContent = 'keine Wallbox'; return; }
+    $('wbBtnLabel').textContent = selected.size === 1
+      ? [...selected][0] : selected.size + ' Wallboxen';
+  }
+
+  // ── Rendern ─────────────────────────────────────────────
+  function renderUnknown() {
+    const rows = $('unknownRows'); rows.replaceChildren();
+    const list = data.unknown.filter(u => !selected || u.stations.some(wbMatch)
+                                          || (u.stations.length === 0 && !selected));
+    for (const u of list) {
+      const tr = el('tr');
+      const tdId = el('td', 'text-nowrap');
+      tdId.append(el('code', 'fs-6', u.id_tag), copyBtn(u.id_tag));
+      const tdCnt = el('td', 'text-end', String(u.count));
+      const tdLast = el('td', 'small text-nowrap', u.last);
+      const tdWb = el('td', 'small');
+      if (u.stations.length) u.stations.forEach(s => {
+        const b = el('span', 'badge text-bg-light border me-1'); b.textContent = s; tdWb.append(b);
+      }); else tdWb.append(el('span', 'text-muted', '—'));
+      const tdSt = el('td');
+      if (u.status) tdSt.append(el('span', 'badge text-bg-warning', u.status));
+      tr.append(tdId, tdCnt, tdLast, tdWb, tdSt);
+      rows.append(tr);
+    }
+    $('unknownEmpty').classList.toggle('d-none', list.length > 0);
+    $('unknownCount').textContent = list.length ? `${list.length} verschiedene Tags` : '';
+  }
+
+  function renderRaw() {
+    const rows = $('rawRows'); rows.replaceChildren();
+    const q = norm($('logSearch').value.trim());
+    const lvl = $('levelFilter').value;
+    const lvlOk = l => lvl === 'all' || (lvl === 'error' ? l === 'ERROR'
+                                       : l === 'ERROR' || l === 'WARN');
+    let shown = 0;
+    for (const e of data.events) {
+      if (!wbMatch(e.cb)) continue;
+      if (!lvlOk(e.level)) continue;
+      if (q && !norm(e.msg).includes(q) && !norm(e.cb).includes(q)) continue;
+      shown++;
+      if (shown > 1500) break;
+      const tr = el('tr');
+      tr.append(el('td', 'text-nowrap text-muted', e.ts.slice(11) + ' '));
+      const tdL = el('td');
+      tdL.append(el('span', 'badge ' + (LEVEL_CLASS[e.level] || 'text-bg-secondary'), e.level));
+      tr.append(tdL);
+      tr.append(el('td', 'text-nowrap', e.cb || ''));
+      const tdM = el('td', 'text-break'); highlight(tdM, e.msg, q); tr.append(tdM);
+      rows.append(tr);
+    }
+    $('rawEmpty').classList.toggle('d-none', shown > 0);
+    $('rawCount').textContent = shown ? `${shown} Zeilen` : '';
+    $('truncNote').textContent = data.truncated
+      ? 'Nur die neuesten 1500 Zeilen werden angezeigt – bei Bedarf weniger Zeilen laden oder filtern.' : '';
+  }
+
+  function render() {
+    if (mode === 'unknown') renderUnknown(); else renderRaw();
+  }
+
+  // ── Daten laden ─────────────────────────────────────────
+  async function load() {
+    if (busy) return;
+    busy = true;
+    $('refreshSpin').classList.remove('d-none'); $('refreshIcon').classList.add('d-none');
+    try {
+      const r = await fetch(API + '?lines=' + $('lineCount').value, { credentials: 'same-origin' });
+      const d = await r.json();
+      if (!d.ok) {
+        $('logError').textContent = d.error || 'Log konnte nicht gelesen werden.';
+        $('logError').classList.remove('d-none');
+        return;
+      }
+      $('logError').classList.add('d-none');
+      const prevSel = selected ? [...selected] : null;
+      const prevBoxes = data.wallboxes.join('|');
+      data = d;
+      if (data.wallboxes.join('|') !== prevBoxes || !$('wbList').children.length) {
+        if (prevSel) selected = new Set(prevSel.filter(x => data.wallboxes.includes(x)));
+        buildWbList();
+      }
+      render();
+    } catch (e) {
+      $('logError').textContent = 'Server nicht erreichbar.';
+      $('logError').classList.remove('d-none');
+    } finally {
+      busy = false;
+      $('refreshSpin').classList.add('d-none'); $('refreshIcon').classList.remove('d-none');
+    }
+  }
+
+  function setMode(m) {
+    mode = m;
+    document.querySelectorAll('[data-mode]').forEach(x =>
+      x.classList.toggle('d-none', x.dataset.mode !== m));
+    render();
+  }
+
+  function schedule() {
+    if (timer) clearInterval(timer);
+    if ($('autoRefresh').checked) timer = setInterval(load, 7000);
+  }
+
+  $('modeUnknown').addEventListener('change', () => setMode('unknown'));
+  $('modeRaw').addEventListener('change', () => setMode('raw'));
+  $('logSearch').addEventListener('input', renderRaw);
+  $('levelFilter').addEventListener('change', renderRaw);
+  $('lineCount').addEventListener('change', load);
+  $('refreshBtn').addEventListener('click', load);
+  $('autoRefresh').addEventListener('change', schedule);
+
+  load().then(schedule);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (timer) clearInterval(timer); }
+    else { load(); schedule(); }
+  });
+})();
+</script>
+{% endblock %}

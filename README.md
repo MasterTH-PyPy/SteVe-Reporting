@@ -49,6 +49,7 @@ Vorlage ist `.env.example`.
 | `DB_USER` | ja | `steve` | DB-Benutzer (= `db.user`) |
 | `DB_PASSWORD` | ja | – | DB-Passwort (= `db.password`) |
 | `STEVE_VERSION` | nein | `current` | `current` für SteVe 3.7+ (das EVSE-Schema ab 3.13 wird automatisch erkannt), `legacy` für 3.6 |
+| `STEVE_APP_CONTAINER` | nein | aus `DOCKER_CONTAINER` abgeleitet | Nur für die **Log**-Seite: Name des SteVe-**App**-Containers. Leer = `…-db-…` → `…-app-…` |
 | `SECRET_KEY` | ja | – | Langer Zufallswert für die Flask-Sessions |
 
 Beispiel:

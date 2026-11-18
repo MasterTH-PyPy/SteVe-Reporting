@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import hashlib
 import re
+import json
 from werkzeug.security import generate_password_hash, check_password_hash as _check_pw
 import secrets
 from datetime import datetime, date
@@ -48,8 +49,20 @@ DB_USER          = os.environ.get("DB_USER",          "steve")
 DB_PASSWORD      = os.environ.get("DB_PASSWORD",      "")
 STEVE_VERSION    = os.environ.get("STEVE_VERSION",    "current")
 
+def _default_app_container(db_name: str) -> str:
+    """App-Container aus dem DB-Containernamen ableiten (…-db-… → …-app-…)."""
+    if "-db-" in db_name:
+        return db_name.replace("-db-", "-app-")
+    if db_name.endswith("-db"):
+        return db_name[:-3] + "-app"
+    if db_name.endswith("-db-1"):
+        return db_name[:-5] + "-app-1"
+    return db_name
+# Container mit der SteVe-Anwendung (für das Log). Überschreibbar in der .env.
+STEVE_APP_CONTAINER = os.environ.get("STEVE_APP_CONTAINER", "") or _default_app_container(DOCKER_CONTAINER)
+
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.9.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -2346,6 +2359,166 @@ def ocpp_tag_history(pk):
                            avg_kw=avg_power_kw(total_kwh, sum(_f(t["dauer_min"]) for t in done)),
                            stations=sorted({t["station"] for t in txs if _nn(t["station"])}),
                            username=session["username"])
+
+
+# ─────────────────────────────────────────────
+# Admin: SteVe-Log ansehen (OCPP-Meldungen) und unbekannte Tags finden
+# ─────────────────────────────────────────────
+
+_CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+# Logback-Zeile: "[INFO ] 2026-11-18 09:10:50,423 de.rwth…WebSocketLogger (qtp…) - <msg>"
+# re.search, damit evtl. Docker-/Compose-Präfixe davor ignoriert werden.
+_LOG_RE = re.compile(
+    r"\[(?P<level>INFO|ERROR|WARN|DEBUG|TRACE)\s*\]\s+"
+    r"(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s+"
+    r"(?P<logger>\S+)\s+\((?P<thread>[^)]*)\)\s+-\s+"
+    r"(?P<msg>.*)$"
+)
+_CB_RE    = re.compile(r"chargeBoxId=([^,\]]+)")
+_FRAME_RE = re.compile(r"(Received|Sending):\s*(\[.*\])\s*$")
+LOG_AUTH_ACTIONS = ("Authorize", "StartTransaction")
+
+
+def steve_app_container() -> str:
+    return STEVE_APP_CONTAINER
+
+
+def _read_docker_logs(lines: int):
+    """(ok, text, err) – holt die letzten N Zeilen des App-Containers über den Docker-Socket."""
+    container = steve_app_container()
+    if not _CONTAINER_RE.match(container or ""):
+        return False, "", f"Ungültiger Container-Name: {container!r}"
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "--tail", str(int(lines)), container],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "", "Zeitüberschreitung beim Lesen des Logs."
+    except Exception as e:                                   # docker nicht erreichbar o.ä.
+        return False, "", str(e)[:300]
+    if result.returncode != 0:
+        return False, "", (result.stderr or "").strip()[:300]
+    # docker trennt stdout/stderr – beides zusammen, später nach Zeit sortiert
+    return True, (result.stdout or "") + (result.stderr or ""), ""
+
+
+def parse_steve_log(text: str, known_tags: set):
+    """
+    Logtext → (events, unknown).
+    events:  geparste Logback-Zeilen (neueste zuerst) für die Rohansicht.
+    unknown: je unbekanntem idTag ein Eintrag (nicht in ocpp_tag) mit Anzahl/Zeit/Wallboxen.
+    """
+    events, attempts, status_by_msg = [], [], {}
+    for raw in text.splitlines():
+        m = _LOG_RE.search(raw)
+        if not m:
+            continue                                        # Fortsetzungs-/Fremdzeilen überspringen
+        msg = m.group("msg")
+        cbm = _CB_RE.search(msg)
+        cb = cbm.group(1).strip() if cbm else ""
+        events.append({
+            "ts":     m.group("ts"),
+            "level":  m.group("level"),
+            "logger": m.group("logger").rsplit(".", 1)[-1],
+            "cb":     cb,
+            "msg":    msg,
+        })
+        fm = _FRAME_RE.search(msg)
+        if not fm:
+            continue
+        direction, arr_s = fm.group(1), fm.group(2)
+        try:
+            arr = json.loads(arr_s)
+        except (ValueError, TypeError):
+            continue
+        if direction == "Received" and len(arr) >= 4 and arr[0] == 2 and arr[2] in LOG_AUTH_ACTIONS:
+            payload = arr[3] if isinstance(arr[3], dict) else {}
+            id_tag = payload.get("idTag")
+            if id_tag:
+                attempts.append({"msgid": str(arr[1]), "ts": m.group("ts"),
+                                 "cb": cb, "action": arr[2], "id_tag": str(id_tag)})
+        elif direction == "Sending" and len(arr) >= 3 and arr[0] == 3 and isinstance(arr[2], dict):
+            status = (arr[2].get("idTagInfo") or {}).get("status")
+            if status:
+                status_by_msg[str(arr[1])] = status
+
+    grouped = {}
+    for a in attempts:
+        if a["id_tag"].lower() in known_tags:
+            continue                                         # schon in SteVe angelegt → kein unbekannter Tag
+        g = grouped.setdefault(a["id_tag"], {
+            "id_tag": a["id_tag"], "count": 0, "first": a["ts"], "last": a["ts"],
+            "stations": set(), "actions": set(), "status": "",
+        })
+        g["count"] += 1
+        g["last"] = max(g["last"], a["ts"])
+        g["first"] = min(g["first"], a["ts"])
+        if a["cb"]:
+            g["stations"].add(a["cb"])
+        g["actions"].add(a["action"])
+        st = status_by_msg.get(a["msgid"])
+        if st:
+            g["status"] = st
+
+    unknown = []
+    for g in grouped.values():
+        unknown.append({
+            "id_tag":   g["id_tag"],
+            "count":    g["count"],
+            "first":    local_dt(g["first"]),
+            "last":     local_dt(g["last"]),
+            "last_raw": g["last"],
+            "stations": sorted(g["stations"]),
+            "actions":  sorted(g["actions"]),
+            "status":   g["status"],
+        })
+    unknown.sort(key=lambda u: u["last_raw"], reverse=True)
+    events.reverse()                                         # neueste zuerst
+    return events, unknown
+
+
+@app.route("/admin/log")
+@role_required("admin")
+def steve_log_page():
+    boxes = [r[0] for r in run_mysql("SELECT charge_box_id FROM charge_box ORDER BY charge_box_id;") if r]
+    return render_template("log.html", wallboxes=boxes,
+                           container=steve_app_container(), username=session["username"])
+
+
+@app.route("/api/log")
+@role_required("admin")
+def api_log():
+    try:
+        lines = int(request.args.get("lines", 500))
+    except (TypeError, ValueError):
+        lines = 500
+    lines = max(50, min(lines, 5000))
+
+    ok, text, err = _read_docker_logs(lines)
+    if not ok:
+        hint = ""
+        if "No such container" in err or "no such container" in err:
+            hint = (f" Der App-Container „{steve_app_container()}“ wurde nicht gefunden. "
+                    "Bitte STEVE_APP_CONTAINER in der .env auf den Namen des SteVe-App-Containers setzen "
+                    "(docker ps zeigt ihn).")
+        return jsonify(ok=False, error=(err or "Log nicht lesbar.") + hint,
+                       container=steve_app_container()), 200
+
+    known = {r[0].lower() for r in run_mysql("SELECT id_tag FROM ocpp_tag;") if r and r[0]}
+    events, unknown = parse_steve_log(text, known)
+    seen = sorted({e["cb"] for e in events if e["cb"]})
+    db_boxes = [r[0] for r in run_mysql("SELECT charge_box_id FROM charge_box ORDER BY charge_box_id;") if r]
+    wallboxes = sorted(set(seen) | set(db_boxes))
+    return jsonify(
+        ok=True, container=steve_app_container(), lines=lines,
+        generated_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        wallboxes=wallboxes,
+        unknown=unknown,
+        events=events[:1500],       # Rohansicht begrenzen
+        truncated=len(events) > 1500,
+    )
 
 
 @app.route("/favicon.ico")
