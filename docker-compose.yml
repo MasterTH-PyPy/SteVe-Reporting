@@ -15,10 +15,19 @@ services:
     # Zugangsdaten & Secret Key: siehe .env.example → als .env kopieren
     env_file: .env
     volumes:
-      # Docker-Socket für docker exec
+      # Docker-Socket für docker exec / docker logs
       - /var/run/docker.sock:/var/run/docker.sock
       # Persistente SQLite-Datenbank (interne User)
       - reporting-data:/app/data
+    # Zum Anlegen von Tags über die SteVe-REST-API muss dieser Container den
+    # SteVe-App-Container per HTTP erreichen. Dafür ins SteVe-Netz legen –
+    # am besten in einer docker-compose.override.yml (siehe README):
+    # networks: [steve-net]
 
 volumes:
   reporting-data:
+
+# networks:
+#   steve-net:
+#     external: true
+#     name: steve-steve-3140_default   # docker network ls zeigt den echten Namen

@@ -1,0 +1,177 @@
+{# Tag-anlegen-Dialog (nur Admin). Einbinden im Block "scripts".
+   Erwartet im Template-Kontext: departments (Liste), api_ready (bool).
+   Öffnen aus JS mit window.openTagCreate('<idTag>'); optional window.onTagCreated(). #}
+<div class="modal fade" id="tagModal" tabindex="-1" aria-labelledby="tagModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form class="modal-content" id="tagForm">
+      <div class="modal-header">
+        <h5 class="modal-title" id="tagModalTitle"><i class="bi bi-plus-circle me-2"></i>Tag anlegen</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+      </div>
+      <div class="modal-body">
+        {% if not api_ready %}
+        <div class="alert alert-warning small">
+          Die SteVe-API ist noch nicht eingerichtet. Bitte zuerst unter
+          <a href="{{ url_for('settings_page') }}">Einstellungen</a> die Zugangsdaten hinterlegen und testen.
+        </div>
+        {% endif %}
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold small" for="tagId">Tag-ID (RFID)</label>
+          <input type="text" class="form-control font-monospace" id="tagId" maxlength="255"
+                 placeholder="z. B. 043b45128e1790" autocomplete="off">
+        </div>
+
+        <div class="btn-group btn-group-sm w-100 mb-3" role="group">
+          <input type="radio" class="btn-check" name="tagOption" id="optVehicle" value="vehicle" autocomplete="off" checked>
+          <label class="btn btn-outline-primary" for="optVehicle"><i class="bi bi-car-front me-1"></i>Städtisches Auto</label>
+          <input type="radio" class="btn-check" name="tagOption" id="optEmployee" value="employee" autocomplete="off">
+          <label class="btn btn-outline-primary" for="optEmployee"><i class="bi bi-person-badge me-1"></i>Mitarbeiter</label>
+        </div>
+
+        {# Option 1: Fahrzeug #}
+        <div data-opt="vehicle">
+          <div class="mb-3">
+            <label class="form-label fw-semibold small" for="chipNumber">ChipNummer</label>
+            <input type="text" class="form-control" id="chipNumber" inputmode="numeric"
+                   maxlength="4" placeholder="4 Ziffern, z. B. 1236" autocomplete="off">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold small" for="department">Abteilung</label>
+            <select class="form-select" id="department">
+              <option value="">— bitte wählen —</option>
+              {% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+            </select>
+            {% if not departments %}
+            <div class="form-text text-warning-emphasis">
+              Noch keine Abteilungen – unter <a href="{{ url_for('settings_page') }}">Einstellungen</a> anlegen.
+            </div>
+            {% endif %}
+          </div>
+          <div class="mb-1">
+            <label class="form-label fw-semibold small" for="plate">Kennzeichen</label>
+            <input type="text" class="form-control" id="plate" maxlength="64"
+                   placeholder="z. B. DA-R 123123" autocomplete="off">
+          </div>
+        </div>
+
+        {# Option 2: Mitarbeiter #}
+        <div data-opt="employee" class="d-none">
+          <div class="mb-3">
+            <label class="form-label fw-semibold small" for="fullName">Vorname Nachname</label>
+            <input type="text" class="form-control" id="fullName" maxlength="120"
+                   placeholder="z. B. Max Müller" autocomplete="off">
+          </div>
+          <div class="row g-2">
+            <div class="col-sm-6 mb-3">
+              <label class="form-label fw-semibold small" for="empUser">Benutzername</label>
+              <input type="text" class="form-control" id="empUser" maxlength="64" autocomplete="off">
+            </div>
+            <div class="col-sm-6 mb-3">
+              <label class="form-label fw-semibold small" for="empPass">Passwort</label>
+              <div class="input-group">
+                <input type="text" class="form-control font-monospace" id="empPass" maxlength="128" autocomplete="off">
+                <button class="btn btn-outline-secondary" type="button" id="genPass" title="Passwort erzeugen">
+                  <i class="bi bi-dice-5"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="alert alert-info small mb-0">
+            Es wird ein Benutzer (Rolle <em>user</em>) angelegt und über die Notiz
+            <code>Mitarbeiter - Name</code> mit dem Tag verknüpft. Der Mitarbeiter muss das
+            Passwort beim ersten Login ändern. Notiere es dir, es wird nur als Hash gespeichert.
+          </div>
+        </div>
+
+        <div class="alert alert-danger small mt-3 mb-0 d-none" id="tagError" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+        <button type="submit" class="btn btn-primary" id="tagSave" {% if not api_ready %}disabled{% endif %}>
+          <span class="spinner-border spinner-border-sm me-1 d-none" id="tagSpin"></span>Anlegen
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+  <div class="toast align-items-center text-bg-success border-0" id="tagToast" role="status">
+    <div class="d-flex">
+      <div class="toast-body" id="tagToastText"></div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Schließen"></button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const modalEl = $('tagModal');
+  if (!modalEl) return;
+  const modal = new bootstrap.Modal(modalEl);
+  const CSRF = "{{ csrf_token() }}";
+
+  function setOpt(opt) {
+    modalEl.querySelectorAll('[data-opt]').forEach(x => x.classList.toggle('d-none', x.dataset.opt !== opt));
+  }
+  modalEl.querySelectorAll('input[name=tagOption]').forEach(r =>
+    r.addEventListener('change', () => setOpt(r.value)));
+
+  $('genPass').addEventListener('click', () => {
+    const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+    let p = ''; const a = new Uint32Array(12); crypto.getRandomValues(a);
+    for (const n of a) p += cs[n % cs.length];
+    $('empPass').value = p;
+  });
+
+  window.openTagCreate = function (idTag) {
+    $('tagError').classList.add('d-none');
+    $('tagId').value = idTag || '';
+    $('chipNumber').value = ''; $('department').value = ''; $('plate').value = '';
+    $('fullName').value = ''; $('empUser').value = ''; $('empPass').value = '';
+    $('optVehicle').checked = true; setOpt('vehicle');
+    modal.show();
+  };
+
+  $('tagForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const opt = modalEl.querySelector('input[name=tagOption]:checked').value;
+    const body = { option: opt, id_tag: $('tagId').value.trim() };
+    if (opt === 'vehicle') {
+      body.chip_number = $('chipNumber').value.trim();
+      body.department  = $('department').value;
+      body.plate       = $('plate').value.trim();
+    } else {
+      body.full_name = $('fullName').value.trim();
+      body.username  = $('empUser').value.trim();
+      body.password  = $('empPass').value;
+    }
+    $('tagError').classList.add('d-none');
+    $('tagSave').disabled = true; $('tagSpin').classList.remove('d-none');
+    try {
+      const r = await fetch("{{ url_for('api_tag_create') }}", {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF }, body: JSON.stringify(body),
+      });
+      let d = {};
+      try { d = await r.json(); } catch (e) {}
+      if (!r.ok || !d.ok) {
+        $('tagError').textContent = d.error || 'Anlegen fehlgeschlagen.';
+        $('tagError').classList.remove('d-none');
+        return;
+      }
+      modal.hide();
+      $('tagToastText').textContent = d.message || 'Tag angelegt.';
+      bootstrap.Toast.getOrCreateInstance($('tagToast'), { delay: 6000 }).show();
+      if (typeof window.onTagCreated === 'function') window.onTagCreated();
+    } catch (e) {
+      $('tagError').textContent = 'Server nicht erreichbar.';
+      $('tagError').classList.remove('d-none');
+    } finally {
+      $('tagSave').disabled = false; $('tagSpin').classList.add('d-none');
+    }
+  });
+})();
+</script>

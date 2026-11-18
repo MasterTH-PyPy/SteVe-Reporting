@@ -16,6 +16,9 @@ import subprocess
 import hashlib
 import re
 import json
+import base64
+import requests
+from cryptography.fernet import Fernet, InvalidToken
 from werkzeug.security import generate_password_hash, check_password_hash as _check_pw
 import secrets
 from datetime import datetime, date
@@ -62,7 +65,7 @@ def _default_app_container(db_name: str) -> str:
 STEVE_APP_CONTAINER = os.environ.get("STEVE_APP_CONTAINER", "") or _default_app_container(DOCKER_CONTAINER)
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.9.2"
+APP_VERSION = "1.10.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -227,6 +230,14 @@ def init_db():
             user_agent  TEXT,
             created_at  TEXT    NOT NULL,
             last_seen   TEXT    NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+        CREATE TABLE IF NOT EXISTS departments (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
         );
     """)
     # Migration: Spalten nachrüsten falls sie noch fehlen
@@ -2207,7 +2218,9 @@ def admin_user_reset_pw(uid):
 @app.route("/admin/tags")
 @role_required("admin")
 def ocpp_tags():
-    return render_template("ocpp_tags.html", tags=fetch_ocpp_tags(), username=session["username"])
+    return render_template("ocpp_tags.html", tags=fetch_ocpp_tags(),
+                           departments=list_departments(), api_ready=steve_api_configured(),
+                           username=session["username"])
 
 
 CURVE_POINTS = 400   # Diagramm: so viele Stützstellen höchstens je Ladevorgang
@@ -2510,7 +2523,9 @@ def parse_steve_log(text: str, known_tags: set):
 def steve_log_page():
     boxes = [r[0] for r in run_mysql("SELECT charge_box_id FROM charge_box ORDER BY charge_box_id;") if r]
     return render_template("log.html", wallboxes=boxes,
-                           container=steve_app_container(), username=session["username"])
+                           container=steve_app_container(),
+                           departments=list_departments(), api_ready=steve_api_configured(),
+                           username=session["username"])
 
 
 @app.route("/api/log")
@@ -2543,6 +2558,280 @@ def api_log():
         events=events[:2500],       # Rohansicht begrenzen
         truncated=len(events) > 2500,
     )
+
+
+# ─────────────────────────────────────────────
+# Einstellungen: App-Settings, Abteilungen, SteVe-REST-API
+# ─────────────────────────────────────────────
+
+def _fernet() -> Fernet:
+    """Symmetrischer Schlüssel aus dem SECRET_KEY (stabil über das Daten-Volume)."""
+    key = base64.urlsafe_b64encode(hashlib.sha256(app.secret_key.encode() if isinstance(app.secret_key, str)
+                                                  else app.secret_key).digest())
+    return Fernet(key)
+
+
+def enc_secret(plain: str) -> str:
+    if not plain:
+        return ""
+    return _fernet().encrypt(plain.encode("utf-8")).decode("ascii")
+
+
+def dec_secret(token: str) -> str:
+    if not token:
+        return ""
+    try:
+        return _fernet().decrypt(token.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return ""                                   # SECRET_KEY geändert → neu eingeben
+
+
+def get_setting(key: str, default: str = "") -> str:
+    row = get_db().execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row and row["value"] is not None else default
+
+
+def set_setting(key: str, value: str):
+    db = get_db()
+    db.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) "
+               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value or ""))
+    db.commit()
+
+
+def list_departments() -> list:
+    return [r["name"] for r in get_db().execute("SELECT name FROM departments ORDER BY name")]
+
+
+# -- SteVe REST API ---------------------------------------------------
+
+def steve_api_base() -> str:
+    """Basis-URL der SteVe-API ohne abschließenden Slash; Default aus App-Container + Port."""
+    base = get_setting("steve_api_base", "").strip()
+    if not base:
+        base = f"http://{steve_app_container()}:8180/steve"
+    return base.rstrip("/")
+
+
+def steve_api_creds() -> tuple:
+    return get_setting("steve_api_user", ""), dec_secret(get_setting("steve_api_pass_enc", ""))
+
+
+def steve_api_configured() -> bool:
+    user, pw = steve_api_creds()
+    return bool(user and pw)
+
+
+def steve_api_request(method: str, path: str, payload=None, timeout: int = 15):
+    """
+    (ok, status, data, err) – ruft die SteVe-REST-API mit Basic Auth auf.
+    data ist das geparste JSON (oder None), err eine kurze Fehlermeldung.
+    """
+    user, pw = steve_api_creds()
+    if not (user and pw):
+        return False, 0, None, "Keine API-Zugangsdaten hinterlegt (unter Einstellungen)."
+    url = steve_api_base() + path
+    try:
+        r = requests.request(method, url, json=payload, auth=(user, pw),
+                              timeout=timeout, headers={"Accept": "application/json"})
+    except requests.exceptions.ConnectionError:
+        return False, 0, None, f"SteVe unter {steve_api_base()} nicht erreichbar (Netzwerk/URL prüfen)."
+    except requests.exceptions.Timeout:
+        return False, 0, None, "Zeitüberschreitung bei der SteVe-API."
+    except requests.exceptions.RequestException as e:
+        return False, 0, None, str(e)[:200]
+    try:
+        data = r.json()
+    except ValueError:
+        data = None
+    if r.status_code in (200, 201):
+        return True, r.status_code, data, ""
+    # Fehlermeldung aus der API ziehen
+    msg = ""
+    if isinstance(data, dict):
+        msg = data.get("message") or data.get("error") or ""
+        errs = data.get("fieldErrors") or data.get("errors")
+        if errs and isinstance(errs, list):
+            msg = (msg + " " + "; ".join(str(e.get("message", e) if isinstance(e, dict) else e) for e in errs)).strip()
+    if r.status_code == 401:
+        msg = msg or "Anmeldung an der SteVe-API fehlgeschlagen (Benutzer/Passwort)."
+    return False, r.status_code, data, (msg or f"SteVe antwortete mit HTTP {r.status_code}.")[:300]
+
+
+def create_ocpp_tag_api(id_tag: str, note: str):
+    """Tag über die SteVe-API anlegen. (ok, err)."""
+    ok, status, data, err = steve_api_request(
+        "POST", "/api/v1/ocppTags",
+        payload={"idTag": id_tag, "note": note, "maxActiveTransactionCount": 1},
+    )
+    if ok:
+        audit("TAG_CREATE_API", f"id_tag={id_tag}")
+        return True, ""
+    if status == 422 and ("exist" in err.lower() or "unique" in err.lower() or "duplicate" in err.lower()):
+        err = f"Der Tag {id_tag} existiert in SteVe bereits."
+    return False, err
+
+
+# -- Routen -----------------------------------------------------------
+
+@app.route("/admin/settings")
+@role_required("admin")
+def settings_page():
+    return render_template("settings.html",
+                           api_base=get_setting("steve_api_base", "") or f"http://{steve_app_container()}:8180/steve",
+                           api_base_default=f"http://{steve_app_container()}:8180/steve",
+                           api_user=get_setting("steve_api_user", ""),
+                           api_pass_set=bool(get_setting("steve_api_pass_enc", "")),
+                           departments=list_departments(),
+                           username=session["username"])
+
+
+@app.route("/api/settings/steve", methods=["POST"])
+@role_required("admin")
+def settings_steve_save():
+    data = request.get_json(silent=True) or {}
+    base = (data.get("base_url") or "").strip()
+    user = (data.get("user") or "").strip()
+    pw   = data.get("password")
+    if base and not re.match(r"^https?://", base):
+        return jsonify(ok=False, error="Die Basis-URL muss mit http:// oder https:// beginnen."), 400
+    set_setting("steve_api_base", base)
+    set_setting("steve_api_user", user)
+    if pw:                                           # leer = vorhandenes Passwort behalten
+        set_setting("steve_api_pass_enc", enc_secret(pw))
+    audit("SETTINGS_STEVE_API", f"base={base} user={user} pw_changed={bool(pw)}")
+    return jsonify(ok=True)
+
+
+@app.route("/api/settings/steve/test", methods=["POST"])
+@role_required("admin")
+def settings_steve_test():
+    # ungespeicherte Werte aus dem Formular testen (Passwort optional = gespeichertes nehmen)
+    data = request.get_json(silent=True) or {}
+    base = (data.get("base_url") or "").strip()
+    user = (data.get("user") or "").strip()
+    pw   = data.get("password")
+    saved_user, saved_pw = steve_api_creds()
+    t_user = user or saved_user
+    t_pw   = pw if pw else saved_pw
+    if not (t_user and t_pw):
+        return jsonify(ok=False, error="Bitte Benutzer und Passwort angeben."), 200
+    t_base = (base or steve_api_base()).rstrip("/")
+    try:
+        r = requests.get(t_base + "/api/v1/ocppTags", params={"ocppTagPk": 0},
+                         auth=(t_user, t_pw), timeout=12, headers={"Accept": "application/json"})
+    except requests.exceptions.ConnectionError:
+        return jsonify(ok=False, error=f"{t_base} nicht erreichbar – Netzwerk/URL prüfen."), 200
+    except requests.exceptions.RequestException as e:
+        return jsonify(ok=False, error=str(e)[:200]), 200
+    if r.status_code == 200:
+        return jsonify(ok=True, message="Verbindung erfolgreich – API erreichbar und Anmeldung gültig.")
+    if r.status_code == 401:
+        return jsonify(ok=False, error="Erreichbar, aber Anmeldung abgelehnt (Benutzer/Passwort oder fehlender API-Zugriff).")
+    return jsonify(ok=False, error=f"Antwort HTTP {r.status_code} von {t_base}.")
+
+
+@app.route("/api/settings/departments", methods=["GET", "POST", "DELETE"])
+@role_required("admin")
+def settings_departments():
+    db = get_db()
+    if request.method == "POST":
+        name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+        if not name:
+            return jsonify(ok=False, error="Bitte einen Namen angeben."), 400
+        if len(name) > 100:
+            return jsonify(ok=False, error="Der Name ist zu lang."), 400
+        try:
+            db.execute("INSERT INTO departments (name) VALUES (?)", (name,))
+            db.commit()
+        except sqlite3.IntegrityError:
+            return jsonify(ok=False, error="Diese Abteilung gibt es schon."), 400
+        audit("DEPARTMENT_ADD", f"name={name}")
+    elif request.method == "DELETE":
+        name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+        db.execute("DELETE FROM departments WHERE name=?", (name,))
+        db.commit()
+        audit("DEPARTMENT_DEL", f"name={name}")
+    return jsonify(ok=True, departments=list_departments())
+
+
+# ─────────────────────────────────────────────
+# Admin: Tag anlegen (Option 1 Auto / Option 2 Mitarbeiter) über die SteVe-API
+# ─────────────────────────────────────────────
+
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,64}$")
+
+
+@app.route("/api/tags/create", methods=["POST"])
+@role_required("admin")
+def api_tag_create():
+    if not steve_api_configured():
+        return jsonify(ok=False, error="Die SteVe-API ist noch nicht eingerichtet. "
+                       "Bitte unter Einstellungen die Zugangsdaten hinterlegen und testen."), 400
+
+    data   = request.get_json(silent=True) or {}
+    option = data.get("option")
+    id_tag = (data.get("id_tag") or "").strip()
+    if not id_tag:
+        return jsonify(ok=False, error="Die Tag-ID fehlt."), 400
+    if len(id_tag) > 255:
+        return jsonify(ok=False, error="Die Tag-ID ist zu lang."), 400
+
+    # ── Option 1: Städtisches Auto ────────────────────────────
+    if option == "vehicle":
+        chip  = (data.get("chip_number") or "").strip()
+        dept  = (data.get("department") or "").strip()
+        plate = (data.get("plate") or "").strip()
+        if not re.fullmatch(r"\d{4}", chip):
+            return jsonify(ok=False, error="Die ChipNummer muss aus genau 4 Ziffern bestehen."), 400
+        if dept not in list_departments():
+            return jsonify(ok=False, error="Bitte eine gültige Abteilung wählen."), 400
+        if not plate:
+            return jsonify(ok=False, error="Bitte ein Kennzeichen angeben."), 400
+        note = f"{chip}\n{dept}\n{plate}"
+        ok, err = create_ocpp_tag_api(id_tag, note)
+        if not ok:
+            return jsonify(ok=False, error=err), 400
+        return jsonify(ok=True, message=f"Tag {id_tag} angelegt (Fahrzeug, {dept}).")
+
+    # ── Option 2: Mitarbeiter (+ Benutzer anlegen) ────────────
+    if option == "employee":
+        name  = (data.get("full_name") or "").strip()
+        uname = (data.get("username") or "").strip()
+        pw    = (data.get("password") or "")
+        if not name:
+            return jsonify(ok=False, error="Bitte Vor- und Nachname angeben."), 400
+        if not _USERNAME_RE.fullmatch(uname):
+            return jsonify(ok=False, error="Benutzername: 3–64 Zeichen, nur Buchstaben, Ziffern, . _ -"), 400
+        if len(pw) < 8:
+            return jsonify(ok=False, error="Das Passwort muss mindestens 8 Zeichen haben."), 400
+        db = get_db()
+        if db.execute("SELECT 1 FROM web_users WHERE username=?", (uname,)).fetchone():
+            return jsonify(ok=False, error=f"Benutzername „{uname}“ ist bereits vergeben."), 400
+
+        note = f"Mitarbeiter - {name}"
+        ok, err = create_ocpp_tag_api(id_tag, note)
+        if not ok:
+            return jsonify(ok=False, error=err), 400
+
+        # Tag ist angelegt – jetzt den verknüpften Benutzer anlegen (Rolle user, muss PW ändern)
+        try:
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            db.execute(
+                "INSERT INTO web_users (username, password, role, steve_user, created_at, password_changed_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (uname, hash_password(pw), "user", note, now, now),   # created==changed → Zwang zur Änderung
+            )
+            db.commit()
+            audit("USER_CREATE", f"new_user={uname} role=user via=tag")
+        except sqlite3.IntegrityError:
+            return jsonify(ok=True, warning=True,
+                           message=f"Tag {id_tag} wurde angelegt, aber der Benutzer „{uname}“ "
+                                   "konnte nicht angelegt werden (bereits vergeben). Bitte den Benutzer "
+                                   "manuell in der Benutzerverwaltung ergänzen.")
+        return jsonify(ok=True, message=f"Tag {id_tag} angelegt und Benutzer „{uname}“ verknüpft "
+                                        "(muss das Passwort beim ersten Login ändern).")
+
+    return jsonify(ok=False, error="Unbekannte Option."), 400
 
 
 @app.route("/favicon.ico")

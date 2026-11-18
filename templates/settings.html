@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Einstellungen – SteVe{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+  <h3 class="fw-bold mb-1"><i class="bi bi-gear me-2 text-primary"></i>Einstellungen</h3>
+  <p class="text-muted mb-0">SteVe-API für das Anlegen von Tags und die Abteilungsliste.</p>
+</div>
+
+<div class="row g-4">
+  {# ── SteVe-API ──────────────────────────────────────── #}
+  <div class="col-12 col-lg-7">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-transparent fw-semibold">
+        <i class="bi bi-plug me-1 text-primary"></i>SteVe-API
+      </div>
+      <div class="card-body">
+        <p class="text-muted small">
+          Zum Anlegen von OCPP-Tags ruft die App die SteVe-REST-API auf.
+          Dafür braucht es einen <strong>SteVe-Web-User mit API-Zugriff</strong> (im SteVe-Manager anzulegen)
+          und eine Netzwerkverbindung zum SteVe-App-Container.
+        </p>
+        <div class="mb-3">
+          <label class="form-label fw-semibold small" for="apiBase">Basis-URL</label>
+          <input type="text" class="form-control form-control-sm" id="apiBase"
+                 value="{{ api_base }}" placeholder="{{ api_base_default }}">
+          <div class="form-text">Standard: <code>{{ api_base_default }}</code> (Container-Name : Port 8180 / Kontextpfad <code>/steve</code>)</div>
+        </div>
+        <div class="row g-2">
+          <div class="col-sm-6 mb-3">
+            <label class="form-label fw-semibold small" for="apiUser">API-Benutzer</label>
+            <input type="text" class="form-control form-control-sm" id="apiUser"
+                   value="{{ api_user }}" autocomplete="off">
+          </div>
+          <div class="col-sm-6 mb-3">
+            <label class="form-label fw-semibold small" for="apiPass">API-Passwort</label>
+            <div class="input-group input-group-sm">
+              <input type="password" class="form-control" id="apiPass" autocomplete="new-password"
+                     placeholder="{% if api_pass_set %}•••••••• (gespeichert){% else %}Passwort{% endif %}">
+              <button class="btn btn-outline-secondary" type="button" id="togglePass" title="anzeigen">
+                <i class="bi bi-eye"></i>
+              </button>
+            </div>
+            <div class="form-text">
+              {% if api_pass_set %}Leer lassen = gespeichertes Passwort behalten.{% endif %}
+              Wird verschlüsselt gespeichert.
+            </div>
+          </div>
+        </div>
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+          <button class="btn btn-primary btn-sm" id="saveApi" type="button">
+            <span class="spinner-border spinner-border-sm d-none" id="saveApiSpin"></span>Speichern
+          </button>
+          <button class="btn btn-outline-primary btn-sm" id="testApi" type="button">
+            <span class="spinner-border spinner-border-sm d-none" id="testApiSpin"></span>
+            <i class="bi bi-plug-fill me-1"></i>Verbindung testen
+          </button>
+          <span id="apiMsg" class="small"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Abteilungen ────────────────────────────────────── #}
+  <div class="col-12 col-lg-5">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-transparent fw-semibold">
+        <i class="bi bi-diagram-3 me-1 text-primary"></i>Abteilungen
+      </div>
+      <div class="card-body">
+        <p class="text-muted small">Auswahl für „Städtisches Auto“ beim Tag-Anlegen.</p>
+        <div class="input-group input-group-sm mb-3">
+          <input type="text" class="form-control" id="deptInput" placeholder="neue Abteilung …"
+                 maxlength="100" autocomplete="off">
+          <button class="btn btn-primary" type="button" id="deptAdd"><i class="bi bi-plus-lg"></i></button>
+        </div>
+        <ul class="list-group list-group-flush" id="deptList"></ul>
+        <p class="text-muted small mt-2 mb-0 d-none" id="deptEmpty">Noch keine Abteilung angelegt.</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const CSRF = "{{ csrf_token() }}";
+  const hdr = { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF };
+  const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x !== undefined) e.textContent = x; return e; };
+
+  function msg(node, ok, text) {
+    node.className = 'small ' + (ok ? 'text-success' : 'text-danger');
+    node.textContent = text;
+  }
+
+  // ── API-Zugang ──
+  $('togglePass').addEventListener('click', () => {
+    const f = $('apiPass'); f.type = f.type === 'password' ? 'text' : 'password';
+    $('togglePass').querySelector('i').className = f.type === 'password' ? 'bi bi-eye' : 'bi bi-eye-slash';
+  });
+
+  const apiBody = () => JSON.stringify({ base_url: $('apiBase').value.trim(),
+                                         user: $('apiUser').value.trim(), password: $('apiPass').value });
+
+  $('saveApi').addEventListener('click', async () => {
+    $('saveApiSpin').classList.remove('d-none'); $('saveApi').disabled = true;
+    try {
+      const r = await fetch("{{ url_for('settings_steve_save') }}", { method: 'POST', credentials: 'same-origin', headers: hdr, body: apiBody() });
+      const d = await r.json();
+      if (r.ok && d.ok) { msg($('apiMsg'), true, 'Gespeichert.'); $('apiPass').value = ''; }
+      else msg($('apiMsg'), false, d.error || 'Speichern fehlgeschlagen.');
+    } catch (e) { msg($('apiMsg'), false, 'Server nicht erreichbar.'); }
+    finally { $('saveApiSpin').classList.add('d-none'); $('saveApi').disabled = false; }
+  });
+
+  $('testApi').addEventListener('click', async () => {
+    $('testApiSpin').classList.remove('d-none'); $('testApi').disabled = true;
+    msg($('apiMsg'), true, 'Teste …');
+    try {
+      const r = await fetch("{{ url_for('settings_steve_test') }}", { method: 'POST', credentials: 'same-origin', headers: hdr, body: apiBody() });
+      const d = await r.json();
+      msg($('apiMsg'), d.ok, d.ok ? (d.message || 'Verbindung erfolgreich.') : (d.error || 'Test fehlgeschlagen.'));
+    } catch (e) { msg($('apiMsg'), false, 'Server nicht erreichbar.'); }
+    finally { $('testApiSpin').classList.add('d-none'); $('testApi').disabled = false; }
+  });
+
+  // ── Abteilungen ──
+  function renderDepts(list) {
+    const ul = $('deptList'); ul.replaceChildren();
+    for (const name of list) {
+      const li = el('li', 'list-group-item d-flex justify-content-between align-items-center px-0');
+      li.append(el('span', '', name));
+      const del = el('button', 'btn btn-sm btn-outline-danger'); del.type = 'button';
+      del.append(el('i', 'bi bi-trash'));
+      del.addEventListener('click', () => removeDept(name));
+      li.append(del); ul.append(li);
+    }
+    $('deptEmpty').classList.toggle('d-none', list.length > 0);
+  }
+
+  async function addDept() {
+    const name = $('deptInput').value.trim();
+    if (!name) return;
+    const r = await fetch("{{ url_for('settings_departments') }}", { method: 'POST', credentials: 'same-origin', headers: hdr, body: JSON.stringify({ name }) });
+    const d = await r.json();
+    if (r.ok && d.ok) { $('deptInput').value = ''; renderDepts(d.departments); }
+    else alert(d.error || 'Konnte nicht hinzugefügt werden.');
+  }
+  async function removeDept(name) {
+    const r = await fetch("{{ url_for('settings_departments') }}", { method: 'DELETE', credentials: 'same-origin', headers: hdr, body: JSON.stringify({ name }) });
+    const d = await r.json();
+    if (d.ok) renderDepts(d.departments);
+  }
+  $('deptAdd').addEventListener('click', addDept);
+  $('deptInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addDept(); } });
+
+  renderDepts({{ departments|tojson }});
+})();
+</script>
+{% endblock %}

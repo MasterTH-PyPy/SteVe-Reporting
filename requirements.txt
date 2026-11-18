@@ -5,3 +5,5 @@ gunicorn>=22.0
 flask-limiter>=3.5
 flask-wtf>=1.2
 tzdata>=2024.1
+requests>=2.31
+cryptography>=42.0

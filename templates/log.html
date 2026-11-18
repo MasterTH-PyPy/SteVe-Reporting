@@ -191,9 +191,18 @@
       tr.append(tdL);
       tr.append(el('td', 'text-nowrap', e.cb || ''));
       const tdM = el('td', 'text-break'); highlight(tdM, e.msg, q); tr.append(tdM);
-      const tdC = el('td', 'text-end');
+      const tdC = el('td', 'text-end text-nowrap');
       const idm = e.msg.match(ID_RE);
-      if (idm) tdC.append(copyBtn(idm[1]));
+      if (idm) {
+        tdC.append(copyBtn(idm[1]));
+        {% if api_ready %}
+        const add = el('button', 'btn btn-link btn-sm text-primary p-0 ms-2');
+        add.type = 'button'; add.title = 'Tag anlegen: ' + idm[1];
+        add.append(el('i', 'bi bi-plus-circle'));
+        add.addEventListener('click', ev => { ev.stopPropagation(); window.openTagCreate(idm[1]); });
+        tdC.append(add);
+        {% endif %}
+      }
       tr.append(tdC);
       rows.append(tr);
     }
@@ -252,6 +261,7 @@
   $('refreshBtn').addEventListener('click', load);
   $('autoRefresh').addEventListener('change', schedule);
 
+  window.onTagCreated = load;
   load().then(schedule);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { if (timer) clearInterval(timer); }
@@ -259,4 +269,5 @@
   });
 })();
 </script>
+{% include "_tag_create.html" %}
 {% endblock %}

@@ -100,6 +100,35 @@ der **Docker-Socket** (`/var/run/docker.sock`) in den Container gemountet.
 Ein gemeinsames Docker-Netzwerk mit SteVe ist **nicht** nötig, ebenso keine
 freigegebenen DB-Ports.
 
+## Tags anlegen (SteVe-REST-API)
+
+Das Anlegen von OCPP-Tags (Menü **Log → Unbekannte Tags** bzw. **OCPP-Tags →
+Tag anlegen**) läuft über die SteVe-REST-API. Dafür sind einmalig nötig:
+
+1. **SteVe-Web-User mit API-Zugriff** im SteVe-Manager anlegen (Settings → Web
+   Users). In SteVe 3.14 authentifiziert sich die API per **HTTP Basic Auth**
+   mit diesem Benutzer.
+2. **Netzwerkverbindung** vom Reporting- zum SteVe-**App**-Container herstellen.
+   Der Standard-Aufruf ist `http://<app-container>:8180/steve`. Dazu beide
+   Container ins selbe Docker-Netz legen – z. B. in einer
+   `docker-compose.override.yml`:
+
+   ```yaml
+   services:
+     reporting:
+       networks: [steve-net]
+   networks:
+     steve-net:
+       external: true
+       name: steve-steve-3140_default   # docker network ls zeigt den echten Namen
+   ```
+3. In der App unter **Einstellungen → SteVe-API** Basis-URL, API-Benutzer und
+   -Passwort eintragen und **Verbindung testen**. Das Passwort wird (mit dem
+   `SECRET_KEY`) verschlüsselt in der App-Datenbank gespeichert.
+
+Unter **Einstellungen → Abteilungen** wird die Auswahlliste für Option
+„Städtisches Auto“ gepflegt.
+
 ## Update
 
 ```bash
