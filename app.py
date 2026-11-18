@@ -65,7 +65,7 @@ def _default_app_container(db_name: str) -> str:
 STEVE_APP_CONTAINER = os.environ.get("STEVE_APP_CONTAINER", "") or _default_app_container(DOCKER_CONTAINER)
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.10.1"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -260,6 +260,20 @@ def init_db():
         )
         db.commit()
     db.close()
+
+PASSWORD_POLICY_TEXT = ("mindestens 12 Zeichen, mit Groß- und Kleinbuchstaben, "
+                        "mindestens einer Ziffer und einem Sonderzeichen")
+
+
+def check_password_policy(pw: str):
+    """(ok, fehlermeldung) – prüft die Passwort-Richtlinie."""
+    if pw is None or len(pw) < 12:
+        return False, "Das Passwort muss " + PASSWORD_POLICY_TEXT + " enthalten."
+    if not re.search(r"[a-z]", pw) or not re.search(r"[A-Z]", pw) \
+            or not re.search(r"\d", pw) or not re.search(r"[^A-Za-z0-9]", pw):
+        return False, "Das Passwort muss " + PASSWORD_POLICY_TEXT + " enthalten."
+    return True, ""
+
 
 def hash_password(pw: str) -> str:
     return generate_password_hash(pw)
@@ -1657,8 +1671,8 @@ def change_password():
         user = db.execute("SELECT * FROM web_users WHERE id=?", (session["user_id"],)).fetchone()
         if not user or not verify_password(current_pw, user["password"]):
             error = "Das aktuelle Passwort ist falsch."
-        elif len(new_pw) < 6:
-            error = "Das neue Passwort muss mindestens 6 Zeichen lang sein."
+        elif not check_password_policy(new_pw)[0]:
+            error = check_password_policy(new_pw)[1]
         elif new_pw != confirm_pw:
             error = "Die neuen Passwörter stimmen nicht überein."
         else:
@@ -2074,10 +2088,13 @@ def admin_user_new():
         steve = request.form.get("steve_user", "") or None
 
         force_pw = request.form.get("force_pw_change") == "on"
+        pol_ok, pol_msg = check_password_policy(pw)
         if not uname or not pw:
             flash("Benutzername und Passwort sind Pflichtfelder.", "danger")
         elif role not in ROLES:
             flash("Ungültige Rolle.", "danger")
+        elif not pol_ok:
+            flash(pol_msg, "danger")
         else:
             db = get_db()
             try:
@@ -2124,10 +2141,13 @@ def admin_user_edit(uid):
         steve = request.form.get("steve_user", "") or None
 
         force_pw = request.form.get("force_pw_change") == "on"
+        pw_ok, pw_msg = check_password_policy(pw) if pw else (True, "")
         if not uname:
             flash("Benutzername ist ein Pflichtfeld.", "danger")
         elif role not in ROLES:
             flash("Ungültige Rolle.", "danger")
+        elif not pw_ok:
+            flash(pw_msg, "danger")
         else:
             try:
                 if pw:
@@ -2802,8 +2822,9 @@ def api_tag_create():
             return jsonify(ok=False, error="Bitte Vor- und Nachname angeben."), 400
         if not _USERNAME_RE.fullmatch(uname):
             return jsonify(ok=False, error="Benutzername: 3–64 Zeichen, nur Buchstaben, Ziffern, . _ -"), 400
-        if len(pw) < 8:
-            return jsonify(ok=False, error="Das Passwort muss mindestens 8 Zeichen haben."), 400
+        pol_ok, pol_msg = check_password_policy(pw)
+        if not pol_ok:
+            return jsonify(ok=False, error=pol_msg), 400
         db = get_db()
         if db.execute("SELECT 1 FROM web_users WHERE username=?", (uname,)).fetchone():
             return jsonify(ok=False, error=f"Benutzername „{uname}“ ist bereits vergeben."), 400

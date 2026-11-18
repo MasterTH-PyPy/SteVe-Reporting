@@ -32,9 +32,18 @@
             <label class="form-label fw-semibold">
               Passwort{% if action == 'new' %} <span class="text-danger">*</span>{% endif %}
             </label>
-            <input type="password" name="password" class="form-control"
-                   placeholder="{% if action == 'edit' %}Leer lassen = unverändert{% else %}Passwort setzen{% endif %}"
-                   {% if action == 'new' %}required{% endif %}/>
+            <div class="input-group">
+              <input type="password" name="password" id="userPw" class="form-control"
+                     placeholder="{% if action == 'edit' %}Leer lassen = unverändert{% else %}Passwort setzen{% endif %}"
+                     {% if action == 'new' %}required minlength="12"{% endif %}/>
+              <button class="btn btn-outline-secondary" type="button" id="userPwShow" title="anzeigen">
+                <i class="bi bi-eye"></i>
+              </button>
+              <button class="btn btn-outline-secondary" type="button" id="userPwGen" title="Sicheres Passwort erzeugen">
+                <i class="bi bi-dice-5"></i>
+              </button>
+            </div>
+            <div class="form-text" id="userPwHint"></div>
           </div>
 
           <div class="mb-3">
@@ -134,5 +143,21 @@ function onRoleChange(role) {
 }
 // Initial
 onRoleChange(document.getElementById('roleSelect').value);
+
+// Passwort: Generator + Live-Anzeige (Richtlinie 12 Zeichen, Groß/klein, Zahl, Sonderzeichen)
+(function () {
+  const pw = document.getElementById('userPw');
+  if (!pw) return;
+  window.attachPasswordField(pw, { genBtn: document.getElementById('userPwGen'),
+                                   hint: document.getElementById('userPwHint') });
+  document.getElementById('userPwShow').addEventListener('click', function () {
+    pw.type = pw.type === 'password' ? 'text' : 'password';
+    this.querySelector('i').className = pw.type === 'password' ? 'bi bi-eye' : 'bi bi-eye-slash';
+  });
+  // Beim Bearbeiten ist ein leeres Feld erlaubt (unverändert); sonst Richtlinie prüfen
+  pw.closest('form').addEventListener('submit', e => {
+    if (pw.value && !window.PW_POLICY.ok(pw.value)) { e.preventDefault(); pw.focus(); }
+  });
+})();
 </script>
 {% endblock %}

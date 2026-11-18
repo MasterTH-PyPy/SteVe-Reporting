@@ -116,6 +116,52 @@
 {% endif %}
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ── Passwort-Richtlinie, Generator und Live-Anzeige (global) ──
+window.PW_POLICY = {
+  rules: [
+    { re: /.{12,}/,        label: '12 Zeichen' },
+    { re: /[a-z]/,         label: 'Kleinbuchstabe' },
+    { re: /[A-Z]/,         label: 'Großbuchstabe' },
+    { re: /\d/,            label: 'Ziffer' },
+    { re: /[^A-Za-z0-9]/,  label: 'Sonderzeichen' },
+  ],
+  ok(pw) { return this.rules.every(r => r.re.test(pw || '')); },
+};
+window.generatePassword = function (len) {
+  len = len || 14;
+  const sets = ['abcdefghijkmnopqrstuvwxyz', 'ABCDEFGHJKLMNPQRSTUVWXYZ', '23456789', '!@#$%&*?+-_='];
+  const all = sets.join('');
+  const a = new Uint32Array(len); crypto.getRandomValues(a);
+  const chars = sets.map((s, i) => s[a[i] % s.length]);          // je einer aus jeder Gruppe
+  for (let i = sets.length; i < len; i++) chars.push(all[a[i] % all.length]);
+  for (let i = chars.length - 1; i > 0; i--) {                   // mischen
+    const j = a[i] % (i + 1); [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+};
+// input: Passwortfeld; opts.genBtn: Knopf zum Erzeugen; opts.hint: Element für die Anzeige
+window.attachPasswordField = function (input, opts) {
+  opts = opts || {};
+  if (opts.genBtn) opts.genBtn.addEventListener('click', () => {
+    input.type = 'text'; input.value = window.generatePassword();
+    input.dispatchEvent(new Event('input'));
+  });
+  if (opts.hint) {
+    const render = () => {
+      opts.hint.replaceChildren();
+      window.PW_POLICY.rules.forEach(r => {
+        const ok = r.re.test(input.value);
+        const s = document.createElement('span');
+        s.className = 'me-2 small ' + (ok ? 'text-success' : 'text-muted');
+        s.textContent = (ok ? '✓ ' : '• ') + r.label;
+        opts.hint.appendChild(s);
+      });
+    };
+    input.addEventListener('input', render); render();
+  }
+};
+</script>
 {% block scripts %}{% endblock %}
 <script>
 // Bootstrap-Tooltips aktivieren; bei gesperrtem Export auch per Klick/Tippen anzeigen

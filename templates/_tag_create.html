@@ -71,10 +71,11 @@
               <label class="form-label fw-semibold small" for="empPass">Passwort</label>
               <div class="input-group">
                 <input type="text" class="form-control font-monospace" id="empPass" maxlength="128" autocomplete="off">
-                <button class="btn btn-outline-secondary" type="button" id="genPass" title="Passwort erzeugen">
+                <button class="btn btn-outline-secondary" type="button" id="genPass" title="Sicheres Passwort erzeugen">
                   <i class="bi bi-dice-5"></i>
                 </button>
               </div>
+              <div class="form-text" id="empPassHint"></div>
             </div>
           </div>
           <div class="alert alert-info small mb-0">
@@ -119,12 +120,7 @@
   modalEl.querySelectorAll('input[name=tagOption]').forEach(r =>
     r.addEventListener('change', () => setOpt(r.value)));
 
-  $('genPass').addEventListener('click', () => {
-    const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-    let p = ''; const a = new Uint32Array(12); crypto.getRandomValues(a);
-    for (const n of a) p += cs[n % cs.length];
-    $('empPass').value = p;
-  });
+  window.attachPasswordField($('empPass'), { genBtn: $('genPass'), hint: $('empPassHint') });
 
   window.openTagCreate = function (idTag) {
     $('tagError').classList.add('d-none');
