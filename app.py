@@ -62,7 +62,7 @@ def _default_app_container(db_name: str) -> str:
 STEVE_APP_CONTAINER = os.environ.get("STEVE_APP_CONTAINER", "") or _default_app_container(DOCKER_CONTAINER)
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.2"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -2377,6 +2377,8 @@ _LOG_RE = re.compile(
 )
 _CB_RE    = re.compile(r"chargeBoxId=([^,\]]+)")
 _FRAME_RE = re.compile(r"(Received|Sending):\s*(\[.*\])\s*$")
+# Klartext-Zeile von SteVe: "... idTag '043b…' is INVALID (not present in DB)."
+_INVALID_RE = re.compile(r"idTag\s+'([^']+)'")
 LOG_AUTH_ACTIONS = ("Authorize", "StartTransaction")
 
 
@@ -2410,14 +2412,21 @@ def parse_steve_log(text: str, known_tags: set):
     events:  geparste Logback-Zeilen (neueste zuerst) für die Rohansicht.
     unknown: je unbekanntem idTag ein Eintrag (nicht in ocpp_tag) mit Anzahl/Zeit/Wallboxen.
     """
-    events, attempts, status_by_msg = [], [], {}
+    events = []
+    auth = []                     # aus WebSocketLogger-Frames (Received Authorize/StartTransaction)
+    invalid = []                  # aus Klartext-Zeilen "idTag '…' is INVALID"
+    status_by_msg = {}
+    thread_cb = {}                # letzte bekannte Wallbox je Thread (für Zeilen ohne chargeBoxId)
     for raw in text.splitlines():
         m = _LOG_RE.search(raw)
         if not m:
             continue                                        # Fortsetzungs-/Fremdzeilen überspringen
         msg = m.group("msg")
+        thread = m.group("thread")
         cbm = _CB_RE.search(msg)
         cb = cbm.group(1).strip() if cbm else ""
+        if cb:
+            thread_cb[thread] = cb
         events.append({
             "ts":     m.group("ts"),
             "level":  m.group("level"),
@@ -2426,23 +2435,41 @@ def parse_steve_log(text: str, known_tags: set):
             "msg":    msg,
         })
         fm = _FRAME_RE.search(msg)
-        if not fm:
+        if fm:
+            direction, arr_s = fm.group(1), fm.group(2)
+            try:
+                arr = json.loads(arr_s)
+            except (ValueError, TypeError):
+                arr = None
+            if arr and direction == "Received" and len(arr) >= 4 and arr[0] == 2 and arr[2] in LOG_AUTH_ACTIONS:
+                payload = arr[3] if isinstance(arr[3], dict) else {}
+                id_tag = payload.get("idTag")
+                if id_tag:
+                    auth.append({"msgid": str(arr[1]), "ts": m.group("ts"), "cb": cb,
+                                 "action": arr[2], "id_tag": str(id_tag), "thread": thread})
+            elif arr and direction == "Sending" and len(arr) >= 3 and arr[0] == 3 and isinstance(arr[2], dict):
+                status = (arr[2].get("idTagInfo") or {}).get("status")
+                if status:
+                    status_by_msg[str(arr[1])] = status
             continue
-        direction, arr_s = fm.group(1), fm.group(2)
-        try:
-            arr = json.loads(arr_s)
-        except (ValueError, TypeError):
-            continue
-        if direction == "Received" and len(arr) >= 4 and arr[0] == 2 and arr[2] in LOG_AUTH_ACTIONS:
-            payload = arr[3] if isinstance(arr[3], dict) else {}
-            id_tag = payload.get("idTag")
-            if id_tag:
-                attempts.append({"msgid": str(arr[1]), "ts": m.group("ts"),
-                                 "cb": cb, "action": arr[2], "id_tag": str(id_tag)})
-        elif direction == "Sending" and len(arr) >= 3 and arr[0] == 3 and isinstance(arr[2], dict):
-            status = (arr[2].get("idTagInfo") or {}).get("status")
-            if status:
-                status_by_msg[str(arr[1])] = status
+        # Kein Frame: Klartext-Ablehnung eines unbekannten Tags?
+        if "INVALID" in msg.upper():
+            im = _INVALID_RE.search(msg)
+            if im:
+                invalid.append({"ts": m.group("ts"), "id_tag": im.group(1).strip(), "thread": thread})
+
+    # Versuche sammeln; Frame und zugehörige INVALID-Zeile sind dasselbe Ereignis
+    attempts = []
+    covered = set()
+    for a in auth:
+        a["status"] = status_by_msg.get(a["msgid"], "")
+        attempts.append(a)
+        covered.add((a["id_tag"], a["thread"], a["ts"][:19]))
+    for iv in invalid:
+        if (iv["id_tag"], iv["thread"], iv["ts"][:19]) in covered:
+            continue                                        # schon über den Frame erfasst
+        attempts.append({"ts": iv["ts"], "cb": thread_cb.get(iv["thread"], ""),
+                         "action": "Authorize", "id_tag": iv["id_tag"], "status": "Invalid"})
 
     grouped = {}
     for a in attempts:
@@ -2458,9 +2485,8 @@ def parse_steve_log(text: str, known_tags: set):
         if a["cb"]:
             g["stations"].add(a["cb"])
         g["actions"].add(a["action"])
-        st = status_by_msg.get(a["msgid"])
-        if st:
-            g["status"] = st
+        if a.get("status"):
+            g["status"] = a["status"]
 
     unknown = []
     for g in grouped.values():
@@ -2506,8 +2532,7 @@ def api_log():
         return jsonify(ok=False, error=(err or "Log nicht lesbar.") + hint,
                        container=steve_app_container()), 200
 
-    known = {r[0].lower() for r in run_mysql("SELECT id_tag FROM ocpp_tag;") if r and r[0]}
-    events, unknown = parse_steve_log(text, known)
+    events, _ = parse_steve_log(text, set())
     seen = sorted({e["cb"] for e in events if e["cb"]})
     db_boxes = [r[0] for r in run_mysql("SELECT charge_box_id FROM charge_box ORDER BY charge_box_id;") if r]
     wallboxes = sorted(set(seen) | set(db_boxes))
@@ -2515,9 +2540,8 @@ def api_log():
         ok=True, container=steve_app_container(), lines=lines,
         generated_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
         wallboxes=wallboxes,
-        unknown=unknown,
-        events=events[:1500],       # Rohansicht begrenzen
-        truncated=len(events) > 1500,
+        events=events[:2500],       # Rohansicht begrenzen
+        truncated=len(events) > 2500,
     )
 
 
