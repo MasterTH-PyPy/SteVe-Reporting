@@ -65,7 +65,7 @@ def _default_app_container(db_name: str) -> str:
 STEVE_APP_CONTAINER = os.environ.get("STEVE_APP_CONTAINER", "") or _default_app_container(DOCKER_CONTAINER)
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.10.2"
+APP_VERSION = "1.11.0"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -2677,6 +2677,48 @@ def steve_api_request(method: str, path: str, payload=None, timeout: int = 15):
     return False, r.status_code, data, (msg or f"SteVe antwortete mit HTTP {r.status_code}.")[:300]
 
 
+NOTE_MAX_LEN = 1000
+
+
+def _normalize_note(raw: str) -> str:
+    """Notiz wie in der Benutzer-Verknüpfung: Zeilen mit ' - ' verbunden."""
+    return " - ".join(p.strip() for p in (raw or "").replace("\r", "\n").split("\n") if p.strip())
+
+
+def update_ocpp_tag_api(pk: int, new_note: str, blocked):
+    """Notiz (und optional Sperrung) eines Tags ändern; übrige Felder bleiben erhalten. (ok, err)."""
+    ok, status, cur, err = steve_api_request("GET", f"/api/v1/ocppTags/{int(pk)}")
+    if not ok or not isinstance(cur, dict):
+        return False, err or "Tag in SteVe nicht gefunden."
+    max_c = cur.get("maxActiveTransactionCount")
+    if blocked is True:
+        max_c = 0
+    elif blocked is False:
+        max_c = max_c if (max_c not in (None, 0)) else -1     # entsperren: unbegrenzt (SteVe-Konvention)
+    body = {
+        "idTag":                     cur.get("idTag"),
+        "parentIdTag":               cur.get("parentIdTag"),
+        "expiryDate":                cur.get("expiryDate"),
+        "maxActiveTransactionCount": max_c,
+        "note":                      new_note,
+    }
+    ok, status, data, err = steve_api_request("PUT", f"/api/v1/ocppTags/{int(pk)}", payload=body)
+    if ok:
+        audit("TAG_UPDATE_API", f"pk={pk} blocked={blocked}")
+        return True, ""
+    return False, err
+
+
+def delete_ocpp_tag_api(pk: int):
+    ok, status, data, err = steve_api_request("DELETE", f"/api/v1/ocppTags/{int(pk)}")
+    if ok:
+        audit("TAG_DELETE_API", f"pk={pk}")
+        return True, ""
+    if status == 422 and ("transaction" in err.lower() or "referen" in err.lower() or "constraint" in err.lower()):
+        err = "Der Tag kann nicht gelöscht werden, weil noch Daten (z. B. Transaktionen) darauf verweisen."
+    return False, err
+
+
 def create_ocpp_tag_api(id_tag: str, note: str):
     """Tag über die SteVe-API anlegen. (ok, err)."""
     ok, status, data, err = steve_api_request(
@@ -2866,6 +2908,67 @@ def api_tag_create():
                                         "(muss das Passwort beim ersten Login ändern).")
 
     return jsonify(ok=False, error="Unbekannte Option."), 400
+
+
+@app.route("/api/tags/<int:pk>/update", methods=["POST"])
+@role_required("admin")
+def api_tag_update(pk):
+    if not steve_api_configured():
+        return jsonify(ok=False, error="Die SteVe-API ist nicht eingerichtet (Einstellungen)."), 400
+    data = request.get_json(silent=True) or {}
+    note = (data.get("note") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    blocked = bool(data.get("blocked")) if "blocked" in data else None
+    if len(note) > NOTE_MAX_LEN:
+        return jsonify(ok=False, error=f"Der Kommentar darf höchstens {NOTE_MAX_LEN} Zeichen lang sein."), 400
+    if any(ord(c) < 32 and c not in "\n\t" for c in note):
+        return jsonify(ok=False, error="Der Kommentar enthält unzulässige Steuerzeichen."), 400
+
+    tag = next((t for t in fetch_ocpp_tags() if t["pk"] == pk), None)
+    if not tag:
+        return jsonify(ok=False, error="Tag nicht gefunden – bitte Seite neu laden."), 404
+    old_key, new_key = _normalize_note(tag["note"]), _normalize_note(note)
+
+    ok, err = update_ocpp_tag_api(pk, note, blocked)
+    if not ok:
+        return jsonify(ok=False, error=err), 400
+
+    # Verknüpfte Benutzerkonten hängen an der Notiz – bei Änderung mitführen
+    moved = []
+    if old_key and new_key and old_key != new_key:
+        db = get_db()
+        moved = [u["username"] for u in
+                 db.execute("SELECT username FROM web_users WHERE steve_user = ?", (old_key,))]
+        if moved:
+            db.execute("UPDATE web_users SET steve_user = ? WHERE steve_user = ?", (new_key, old_key))
+            db.commit()
+            audit("TAG_USERS_MOVED", f"users={','.join(moved)}")
+    msg = f"Tag {tag['id_tag']} aktualisiert."
+    if moved:
+        msg += f" Konto {', '.join(moved)} auf die neue Notiz umgestellt."
+    return jsonify(ok=True, message=msg, moved=moved, tags=fetch_ocpp_tags())
+
+
+@app.route("/api/tags/<int:pk>/delete", methods=["POST"])
+@role_required("admin")
+def api_tag_delete(pk):
+    if not steve_api_configured():
+        return jsonify(ok=False, error="Die SteVe-API ist nicht eingerichtet (Einstellungen)."), 400
+    tag = next((t for t in fetch_ocpp_tags() if t["pk"] == pk), None)
+    if not tag:
+        return jsonify(ok=False, error="Tag nicht gefunden – bitte Seite neu laden."), 404
+
+    ok, err = delete_ocpp_tag_api(pk)
+    if not ok:
+        return jsonify(ok=False, error=err), 400
+
+    msg = f"Tag {tag['id_tag']} gelöscht."
+    key = _normalize_note(tag["note"])
+    if key:
+        linked = [u["username"] for u in
+                  get_db().execute("SELECT username FROM web_users WHERE steve_user = ?", (key,))]
+        if linked and not fetch_chips_for_note(key):
+            msg += f" Hinweis: Konto {', '.join(linked)} hat jetzt keinen Chip mehr."
+    return jsonify(ok=True, message=msg, tags=fetch_ocpp_tags())
 
 
 @app.route("/favicon.ico")

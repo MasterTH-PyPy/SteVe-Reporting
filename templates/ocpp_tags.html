@@ -44,6 +44,7 @@
             <th>Zuletzt genutzt</th>
             <th>Status</th>
             <th class="text-end">Ladehistorie</th>
+            {% if api_ready %}<th class="text-end">Aktionen</th>{% endif %}
           </tr>
         </thead>
         <tbody id="tagRows"></tbody>
@@ -58,8 +59,8 @@
 
 {% block scripts %}
 <script>
-(function () {
-  const tags = {{ tags|tojson }};
+document.addEventListener('DOMContentLoaded', function () {
+  let tags = {{ tags|tojson }};
   const HIST_URL = "{{ url_for('ocpp_tag_history', pk=0) }}";      // …/tags/0
   const $ = id => document.getElementById(id);
   const el = (tag, cls, text) => {
@@ -133,6 +134,21 @@
       tdHist.append(a);
 
       tr.append(tdId, tdNote, tdCnt, tdLast, tdStat, tdHist);
+
+      {% if api_ready %}
+      const tdAct = el('td', 'text-end text-nowrap');
+      const edit = el('button', 'btn btn-outline-secondary btn-sm me-1');
+      edit.type = 'button'; edit.title = 'Kommentar/Status bearbeiten';
+      edit.append(el('i', 'bi bi-pencil'));
+      edit.addEventListener('click', () => openEdit(t));
+      const del = el('button', 'btn btn-outline-danger btn-sm');
+      del.type = 'button'; del.title = 'Tag löschen';
+      del.append(el('i', 'bi bi-trash'));
+      del.addEventListener('click', () => openDelete(t));
+      tdAct.append(edit, del);
+      tr.append(tdAct);
+      {% endif %}
+
       rows.append(tr);
     }
     $('tagEmpty').classList.toggle('d-none', shown > 0);
@@ -140,10 +156,129 @@
       ? `${tags.length} Tags` : `${shown} von ${tags.length} Tags`;
   }
 
+  {% if api_ready %}
+  // Modals erst bei Bedarf bauen – die <div>s stehen im DOM nach diesem Script
+  let _editModal, _delModal;
+  const editModal = () => (_editModal ||= new bootstrap.Modal($('editModal')));
+  const delModal  = () => (_delModal  ||= new bootstrap.Modal($('delModal')));
+
+  // ── Bearbeiten ──────────────────────────────────────────
+  let editPk = null;
+  function openEdit(t) {
+    editPk = t.pk;
+    $('editTagId').textContent = t.id_tag;
+    $('editNote').value = t.note;
+    $('editBlocked').checked = !!t.blocked;
+    $('editError').classList.add('d-none');
+    editModal().show();
+  }
+  $('editForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    $('editSave').disabled = true; $('editSpin').classList.remove('d-none'); $('editError').classList.add('d-none');
+    try {
+      const r = await fetch(UPD_URL.replace('/0/', `/${editPk}/`), {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify({ note: $('editNote').value, blocked: $('editBlocked').checked }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) { showErr($('editError'), d.error || 'Speichern fehlgeschlagen.'); return; }
+      tags = d.tags; render(); editModal().hide(); toast(d.message || 'Gespeichert.');
+    } catch (e) { showErr($('editError'), 'Server nicht erreichbar.'); }
+    finally { $('editSave').disabled = false; $('editSpin').classList.add('d-none'); }
+  });
+
+  // ── Löschen ─────────────────────────────────────────────
+  
+  let delPk = null;
+  function openDelete(t) {
+    delPk = t.pk;
+    $('delTagId').textContent = t.id_tag;
+    $('delNote').textContent = t.note.trim() || '(kein Kommentar)';
+    $('delError').classList.add('d-none');
+    delModal().show();
+  }
+  $('delConfirm').addEventListener('click', async () => {
+    $('delConfirm').disabled = true; $('delSpin').classList.remove('d-none'); $('delError').classList.add('d-none');
+    try {
+      const r = await fetch(DEL_URL.replace('/0/', `/${delPk}/`), {
+        method: 'POST', credentials: 'same-origin', headers: { 'X-CSRFToken': CSRF },
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) { showErr($('delError'), d.error || 'Löschen fehlgeschlagen.'); return; }
+      tags = d.tags; render(); delModal().hide(); toast(d.message || 'Gelöscht.');
+    } catch (e) { showErr($('delError'), 'Server nicht erreichbar.'); }
+    finally { $('delConfirm').disabled = false; $('delSpin').classList.add('d-none'); }
+  });
+
+  function showErr(node, msg) { node.textContent = msg; node.classList.remove('d-none'); }
+  function toast(msg) { $('tagToastText').textContent = msg; bootstrap.Toast.getOrCreateInstance($('tagToast'), { delay: 5000 }).show(); }
+  const CSRF    = "{{ csrf_token() }}";
+  const UPD_URL = "{{ url_for('api_tag_update', pk=0) }}";
+  const DEL_URL = "{{ url_for('api_tag_delete', pk=0) }}";
+  {% endif %}
+
   $('tagSearch').addEventListener('input', render);
   render();
-})();
+});
 </script>
 <script>window.onTagCreated = function () { location.reload(); };</script>
 {% include "_tag_create.html" %}
+
+{% if api_ready %}
+{# Bearbeiten #}
+<div class="modal fade" id="editModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form class="modal-content" id="editForm">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-pencil me-2"></i>Tag bearbeiten</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3"><div class="text-muted small">ID-Tag</div><code id="editTagId"></code></div>
+        <label class="form-label fw-semibold small" for="editNote">Kommentar („Additional Note“)</label>
+        <textarea class="form-control" id="editNote" rows="3" maxlength="1000"></textarea>
+        <div class="form-check mt-3">
+          <input class="form-check-input" type="checkbox" id="editBlocked">
+          <label class="form-check-label" for="editBlocked">Tag gesperrt (keine Ladefreigabe)</label>
+        </div>
+        <div class="alert alert-danger small mt-3 mb-0 d-none" id="editError" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+        <button type="submit" class="btn btn-primary" id="editSave">
+          <span class="spinner-border spinner-border-sm me-1 d-none" id="editSpin"></span>Speichern
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# Löschen #}
+<div class="modal fade" id="delModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i>Tag löschen</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2">Soll dieser Tag wirklich dauerhaft aus SteVe gelöscht werden?</p>
+        <div class="mb-1"><code id="delTagId"></code></div>
+        <div class="text-muted small" style="white-space:pre-line" id="delNote"></div>
+        <div class="alert alert-warning small mt-3 mb-0">
+          Bereits erfasste Ladevorgänge bleiben erhalten. Ein verknüpftes Benutzerkonto verliert diesen Chip.
+        </div>
+        <div class="alert alert-danger small mt-2 mb-0 d-none" id="delError" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Abbrechen</button>
+        <button type="button" class="btn btn-danger" id="delConfirm">
+          <span class="spinner-border spinner-border-sm me-1 d-none" id="delSpin"></span>Endgültig löschen
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
