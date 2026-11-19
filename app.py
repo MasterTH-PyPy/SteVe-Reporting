@@ -65,7 +65,7 @@ def _default_app_container(db_name: str) -> str:
 STEVE_APP_CONTAINER = os.environ.get("STEVE_APP_CONTAINER", "") or _default_app_container(DOCKER_CONTAINER)
 
 ROLES = ["admin", "buchhaltung", "userplus", "user"]
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.10.2"
 
 # ─────────────────────────────────────────────
 # Logging
@@ -2746,8 +2746,21 @@ def settings_steve_test():
     if r.status_code == 200:
         return jsonify(ok=True, message="Verbindung erfolgreich – API erreichbar und Anmeldung gültig.")
     if r.status_code == 401:
-        return jsonify(ok=False, error="Erreichbar, aber Anmeldung abgelehnt (Benutzer/Passwort oder fehlender API-Zugriff).")
-    return jsonify(ok=False, error=f"Antwort HTTP {r.status_code} von {t_base}.")
+        detail = ""
+        try:
+            j = r.json()
+            detail = j.get("message") or j.get("error") or ""
+        except ValueError:
+            detail = (r.text or "")[:200]
+        hint = ""
+        dl = detail.lower()
+        if "invalid password" in dl:
+            hint = " → Passwort stimmt nicht (API-Passwort prüfen)."
+        elif "disabled" in dl or "does not exist" in dl or "api access" in dl:
+            hint = " → Benutzer unbekannt/deaktiviert oder api_password nicht gesetzt (SteVe-App neu starten nicht vergessen)."
+        return jsonify(ok=False, error=("Erreichbar, aber Anmeldung abgelehnt. SteVe meldet: "
+                                        + (detail or "(keine Meldung)") + hint))
+    return jsonify(ok=False, error=f"Antwort HTTP {r.status_code} von {t_base}: {(r.text or '')[:200]}")
 
 
 @app.route("/api/settings/departments", methods=["GET", "POST", "DELETE"])
